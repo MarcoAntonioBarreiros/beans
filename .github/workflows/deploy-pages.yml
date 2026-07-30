@@ -1,0 +1,69 @@
+name: Deploy procedural game to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # enablement: true so serve para criar o site do Pages no primeiro deploy,
+      # e ele ja existe ha muito tempo. O custo de deixar ligado apareceu numa
+      # instabilidade do GitHub: o "Get Pages site" falhou com 503, a action
+      # concluiu que o site nao existia e tentou CRIAR — o que o token do
+      # workflow nao pode fazer. Uma leitura que falhou virou "Resource not
+      # accessible by integration" e derrubou o deploy de um commit sadio.
+      # Sem a flag, uma falha transitoria de leitura volta a ser transitoria.
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Configure Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build verified standalone game
+        run: npm run build
+
+      - name: Stage procedural site
+        run: |
+          rm -rf site
+          mkdir -p site
+          cp dist/index.html site/index.html
+          cp dist/beans_living_soil_prototype_vertical_v3.html site/procgen.html
+          # As folhas de sprite sao carregadas em tempo de execucao, entao
+          # precisam ir para o site. Sem isto a skin do Miguelito daria 404 no
+          # ar e cairia no astronauta — silenciosamente, que e pior.
+          if [ -d assets ]; then cp -r assets site/assets; fi
+          touch site/.nojekyll
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

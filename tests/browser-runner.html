@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Beans Browser Smoke Runner</title>
+</head>
+<body data-status="running">
+<pre id="result">running</pre>
+<script>
+(async () => {
+  const result = document.getElementById('result');
+  const errors = [];
+  const checks = [];
+
+  function record(name) {
+    checks.push(name);
+  }
+
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+
+  function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async function waitFor(predicate, message) {
+    const start = performance.now();
+    while (performance.now() - start < 8000) {
+      if (predicate()) return;
+      await wait(25);
+    }
+    throw new Error(typeof message === 'function' ? message() : message);
+  }
+
+  async function loadGame(pathname, query = 'test=1', viewport = {}) {
+    const iframe = document.createElement('iframe');
+    iframe.width = viewport.width || 1280;
+    iframe.height = viewport.height || 720;
+    iframe.src = `${pathname}?${query}`;
+    document.body.appendChild(iframe);
+    await new Promise((resolve, reject) => {
+      iframe.onload = resolve;
+      iframe.onerror = () => reject(new Error(`Failed to load ${pathname}`));
+    });
+
+    const win = iframe.contentWindow;
+    const originalError = win.console.error.bind(win.console);
+    win.console.error = (...args) => {
+      errors.push(args.map(arg => String(arg)).join(' '));
+      originalError(...args);
+    };
+    win.addEventListener('error', event => errors.push(event.message || 'window error'));
+    win.addEventListener('unhandledrejection', event => {
+      errors.push(event.reason?.stack || event.reason?.message || String(event.reason));
+    });
+
+    await waitFor(
+      () => win.miguelitoSim?.state?.level?.platforms?.length > 0,
+      `Current procedural game did not become ready for ${pathname}`,
+    );
+    await waitFor(
+      () => typeof win.miguelitoTutorialDiagnostics === 'function',
+      `Tutorial runtime did not become ready for ${pathname}`,
+    );
+    return { iframe, win };
+  }
+
+  function verifyCurrentGame(win, label) {
+    const sim = win.miguelitoSim;
+    const expectedChunks = sim.state.level.phaseProfile?.totalChunks;
+    assert(!!win.document.querySelector('canvas'), `${label}: canvas should exist`);
+    assert(sim.state.campaign?.phase === 1, `${label}: campaign should start at phase 1`);
+    assert(Number.isInteger(expectedChunks), `${label}: generated level should expose its phase profile`);
+    assert(sim.state.level.debugInfo?.length === expectedChunks, `${label}: generated chunks should match the phase profile`);
+    assert(sim.state.level.platforms.length > sim.state.level.debugInfo.length, `${label}: generated route should include start and recovery platforms`);
+    assert(typeof win.miguelitoTutorialVersion === 'string', `${label}: tutorial entrypoint should expose its version`);
+    assert(!!win.document.querySelector('[data-tutorial-styles]'), `${label}: tutorial styles should be available`);
+    assert(
+      !win.document.documentElement.classList.contains('touch-device'),
+      `${label}: desktop viewport should not expose touch controls`,
+    );
+  }
+
+  async function verifyTutorialFlow(win, label) {
+    const manager = win.miguelitoTutorial;
+    await waitFor(
+      () => manager && !manager.isOpen,
+      `${label}: tutorial manager should become ready without blocking the test entrypoint`,
+    );
+
+    // O cartão de boas-vindas também usa a fila automática. Ele não faz parte
+    // deste cenário e é marcado como conhecido antes de posicionarmos o jogador.
+    manager.markSeen('system-welcome');
+    await waitFor(
+      () => !manager.pendingCards.some(entry => entry.cardId === 'system-welcome'),
+      `${label}: seen welcome card should leave the automatic queue`,
+    );
+
+    const sim = win.miguelitoSim;
+    const player = sim.state.player;
+    player.onGround = false;
+    player.y = 180;
+    player.vy = 180;
+
+    const encounter = manager.trigger('organism-bacillus', {
+      tutorialMode: 'silent',
+      source: 'first-proximity-encounter',
+      phase: 1,
+      chunkIndex: 6,
+      worldX: 1000,
+      visibleWorldWidth: 900,
+      nowSeconds: 10,
+    });
+    assert(encounter, `${label}: first Bacillus proximity should process its mandatory trigger`);
+    assert(!manager.isOpen, `${label}: airborne mandatory card must not open immediately`);
+    assert(
+      manager.pendingCards.some(entry => entry.cardId === 'organism-bacillus'),
+      `${label}: airborne mandatory card should remain queued`,
+    );
+
+    const support = sim.state.level.platforms.find(platform => (
+      !platform.recovery && !platform.final && platform.w >= 100
+    ));
+    player.x = support.x + Math.min(40, support.w / 3);
+    player.y = support.y - player.h;
+    player.vx = 120;
+    player.vy = 0;
+    player.onGround = true;
+    try {
+      await waitFor(
+        () => manager.currentCardId === 'organism-bacillus',
+        `${label}: queued Bacillus card should open after stable support`,
+      );
+    } catch (error) {
+      throw new Error(`${error.message}; diagnostics=${JSON.stringify({
+        pending: manager.pendingCards,
+        safety: manager.safetyDiagnostics,
+        gameState: sim.state.gameState,
+        player: {
+          x: player.x, y: player.y, vx: player.vx, vy: player.vy,
+          onGround: player.onGround, alive: player.alive,
+        },
+        support,
+      })}`);
+    }
+    assert(player.vx === 0 && player.vy === 0, `${label}: automatic opening should stabilize the player`);
+    const pausedTime = sim.state.time;
+    const pausedPosition = { x: player.x, y: player.y };
+    await wait(120);
+    assert(sim.state.time === pausedTime, `${label}: game time should freeze while tutorial is open`);
+    assert(player.x === pausedPosition.x && player.y === pausedPosition.y, `${label}: player should not move while paused`);
+
+    const nextButton = win.document.querySelector('.tutorial-next');
+    const nextRect = nextButton.getBoundingClientRect();
+    const nextHit = win.document.elementFromPoint(
+      nextRect.left + nextRect.width / 2,
+      nextRect.top + nextRect.height / 2,
+    );
+    assert(
+      nextHit === nextButton || nextButton.contains(nextHit),
+      `${label}: tutorial navigation should not be covered by HUD controls`,
+    );
+
+    assert(
+      JSON.stringify(manager.getUnlockedPages('organism-bacillus')) === '[0]',
+      `${label}: first Bacillus encounter should unlock only page zero`,
+    );
+
+    const second = manager.trigger('organism-rhizobium', {
+      tutorialMode: 'silent',
+      source: 'first-proximity-encounter',
+      phase: 2,
+      chunkIndex: 4,
+      worldX: 1100,
+      visibleWorldWidth: 900,
+      nowSeconds: 11,
+    });
+    assert(second, `${label}: a different mandatory card should join the queue`);
+    win.dispatchEvent(new win.KeyboardEvent('keydown', {
+      code: 'Space', key: ' ', bubbles: true, cancelable: true,
+    }));
+    nextButton.click();
+    assert(!manager.isOpen, `${label}: closing one card must resume before opening the next`);
+    // O Chrome headless pode suspender RAFs do segundo iframe quando o orçamento
+    // virtual está perto do fim. Executamos aqui os mesmos checks pós-física que
+    // o app chama no fim de cada frame: 1 frame de retomada + 3 de estabilidade.
+    for (let frame = 0; frame < 4; frame++) manager.updateAutomaticPresentation(.05);
+    try {
+      await waitFor(
+        () => manager.currentCardId === 'organism-rhizobium',
+        `${label}: held jump must not fire; second card opens after a fresh grounded check`,
+      );
+    } catch (error) {
+      throw new Error(`${error.message}; diagnostics=${JSON.stringify({
+        pending: manager.pendingCards,
+        safety: manager.safetyDiagnostics,
+        gameState: sim.state.gameState,
+        player: {
+          x: player.x, y: player.y, vx: player.vx, vy: player.vy,
+          onGround: player.onGround, alive: player.alive,
+        },
+        debug: win.document.getElementById('debug')?.textContent,
+      })}`);
+    }
+    assert(player.onGround && player.vy === 0, `${label}: held jump should remain blocked until keyup`);
+    win.dispatchEvent(new win.KeyboardEvent('keyup', {
+      code: 'Space', key: ' ', bubbles: true, cancelable: true,
+    }));
+    win.document.querySelector('.tutorial-next').click();
+    await waitFor(() => !manager.isOpen, `${label}: one-page Bacillus introduction should close`);
+
+    const pendingBeforeRepeat = manager.pendingCount;
+    manager.trigger('organism-bacillus', {
+      tutorialMode: 'silent',
+      source: 'first-proximity-encounter',
+      phase: 1,
+      chunkIndex: 6,
+      worldX: 1000,
+      visibleWorldWidth: 900,
+      nowSeconds: 12,
+    });
+    assert(manager.pendingCount === pendingBeforeRepeat, `${label}: seen card should not re-enter the queue`);
+
+    manager.trigger('structure-biofilm', {
+      tutorialMode: 'silent',
+      phase: 1,
+      chunkIndex: 12,
+      worldX: 1500,
+      visibleWorldWidth: 900,
+      nowSeconds: 20,
+    });
+    assert(!manager.isOpen, `${label}: derived biofilm update should not open a panel in silent mode`);
+    assert(
+      JSON.stringify(manager.getUnlockedPages('organism-bacillus')) === '[0,1,2,3]',
+      `${label}: biofilm should update the Bacillus guide progressively`,
+    );
+
+    win.dispatchEvent(new win.KeyboardEvent('keydown', {
+      code: 'F5', ctrlKey: true, bubbles: true,
+    }));
+  }
+
+  try {
+    const dev = await loadGame('/index.html');
+    verifyCurrentGame(dev.win, 'source');
+    await verifyTutorialFlow(dev.win, 'source');
+    record('source-entrypoints');
+    dev.iframe.remove();
+
+    const built = await loadGame('/dist/index.html');
+    verifyCurrentGame(built.win, 'build');
+    await verifyTutorialFlow(built.win, 'build');
+    assert(
+      built.win.document.querySelectorAll('script[type="module"]').length === 0,
+      'build: module entrypoints should be replaced by the inline bundle',
+    );
+    assert(
+      built.win.document.querySelectorAll('style[data-tutorial-styles]').length === 1,
+      'build: tutorial styles should be embedded in the standalone document',
+    );
+    assert(
+      built.win.document.querySelectorAll('link[data-tutorial-styles]').length === 0,
+      'build: standalone document should not request an external tutorial stylesheet',
+    );
+    record('standalone-bundle');
+
+    const lab = await loadGame('/index.html', 'test=1&phaseLab=1');
+    await waitFor(() => lab.win.miguelitoPhaseLab?.enabled, 'Phase Lab API should become ready');
+    assert(!!lab.win.document.querySelector('.phase-lab'), 'Phase Lab panel should be mounted');
+    assert(!lab.win.document.querySelector('[data-platform-drag-editor]'), 'Phase Lab should not include a platform drag editor');
+    const labToggle = lab.win.document.querySelector('.phase-lab-toggle');
+    const touchControls = lab.win.document.querySelector('#touch-controls');
+    lab.win.document.documentElement.classList.add('touch-device');
+    touchControls.hidden = false;
+    const labToggleRect = labToggle.getBoundingClientRect();
+    const touchActionsRect = lab.win.document.querySelector('.touch-cluster.actions').getBoundingClientRect();
+    const overlapsTouchActions = !(
+      labToggleRect.right <= touchActionsRect.left
+      || labToggleRect.left >= touchActionsRect.right
+      || labToggleRect.bottom <= touchActionsRect.top
+      || labToggleRect.top >= touchActionsRect.bottom
+    );
+    assert(!overlapsTouchActions, 'Phase Lab toggle should not overlap mobile action controls');
+    assert(labToggleRect.top < 180, 'Phase Lab toggle should remain in the upper HUD area');
+    const config = lab.win.miguelitoPhaseLab.getConfig();
+    config.seed = 'browser-phase-lab';
+    config.allowedOrganisms = ['bacillus'];
+    config.allowedPathogens = [];
+    config.resources = { exudates: 4, crystals: 1, checkpoints: 2 };
+    lab.win.miguelitoPhaseLab.applyConfig(config);
+    await waitFor(
+      () => lab.win.miguelitoSim.state.level.exudates?.length === 4
+        && lab.win.miguelitoSim.state.level.crystals?.length === 1
+        && lab.win.miguelitoSim.state.level.checkpoints?.length === 2,
+      'Phase Lab should restart with configured resources',
+    );
+    const exported = JSON.parse(lab.win.miguelitoPhaseLab.exportManifest());
+    assert(exported.phaseLab.seed === 'browser-phase-lab', 'Phase Lab export should preserve the seed');
+    assert(JSON.stringify(exported.phaseLab.allowedOrganisms) === '["bacillus"]', 'Phase Lab export should preserve organism pool');
+    record('phase-lab-runtime');
+    lab.iframe.remove();
+
+    // ---- ÁUDIO ------------------------------------------------------------
+    //
+    // Instância PRÓPRIA: os fluxos anteriores já enviaram teclas e ponteiro para
+    // o jogo `built`, e qualquer uma dessas interações desbloqueia o áudio. Para
+    // observar o estado inicial é preciso um jogo que ninguém tocou ainda.
+    const audioGame = await loadGame('/dist/index.html', 'test=1');
+    const audioApi = audioGame.win.miguelitoAudio;
+    assert(audioApi, 'window.miguelitoAudio deve existir');
+    const antesDaInteracao = audioApi.debug();
+    assert(antesDaInteracao.available === true, 'o controlador de áudio precisa estar disponível');
+    assert(antesDaInteracao.unlocked === false, 'o jogo abre silencioso, antes da primeira interação');
+    assert(antesDaInteracao.musicTrackId === null, 'nenhuma música antes de interagir');
+    // O botão não pode fingir que o som está tocando enquanto está bloqueado.
+    const botaoInicial = audioGame.win.document.querySelector('[data-mobile-action="toggle-sound"]');
+    assert(botaoInicial, 'o botão de som precisa existir');
+    assert(
+      botaoInicial.getAttribute('title') === 'Clique para ativar o som',
+      `botão bloqueado deve convidar a ativar, veio "${botaoInicial.getAttribute('title')}"`,
+    );
+    assert(botaoInicial.getAttribute('aria-pressed') === 'false', 'bloqueado não é "pressionado"');
+    // E os efeitos já começam a carregar aqui, com o contexto ainda suspenso:
+    // era isso que faltava e deixava o primeiro salto de cada fase sem som.
+    await waitFor(
+      () => audioApi.debug().fxLoaded.includes('playerJump'),
+      () => `o preload precisa começar no init, antes do unlock (carregados: ${audioApi.debug().fxLoaded})`,
+    );
+    assert(audioApi.debug().unlocked === false, 'e isso acontece ainda bloqueado');
+    record('audio starts locked, button says so, and fx preload already began');
+
+    // Primeira interação em qualquer lugar do jogo: desbloqueia e começa a tocar,
+    // sem precisar ligar e desligar o botão.
+    audioGame.win.dispatchEvent(new audioGame.win.KeyboardEvent('keydown', { code: 'Space', bubbles: true }));
+    await waitFor(
+      () => audioApi.debug().unlocked === true,
+      () => `a primeira interação deve desbloquear o áudio (estado: ${JSON.stringify(audioApi.debug())})`,
+    );
+    await waitFor(() => audioApi.debug().musicTrackId !== null, 'a música da fase deve começar sozinha');
+    const depoisDaInteracao = audioApi.debug();
+    assert(depoisDaInteracao.contextState === 'running', 'o contexto precisa estar rodando');
+    assert(depoisDaInteracao.ambienceLayers.length === 5, 'as cinco camadas de ambiente entram juntas');
+    assert(depoisDaInteracao.musicSuppression === 1, 'a música não nasce suprimida');
+    assert(audioApi.uiState().audible === true, 'o áudio precisa estar audível');
+    await waitFor(
+      () => botaoInicial.getAttribute('title') === 'Desligar som',
+      'o botão precisa refletir o som ligado depois do desbloqueio',
+    );
+    record('first interaction unlocks audio without touching the button');
+
+    // Os efeitos curtos são precarregados: o primeiro salto não pode sair mudo.
+    await waitFor(
+      () => audioApi.debug().fxLoaded.includes('playerJump'),
+      () => `playerJump precisa estar precarregado (carregados: ${audioApi.debug().fxLoaded})`,
+    );
+    for (const id of ['playerDamage', 'healthLost', 'gameOver']) {
+      assert(audioApi.debug().fxLoaded.includes(id), `${id} também precisa estar pronto`);
+    }
+    record('short fx are preloaded before the first jump');
+
+    // As nove músicas precisam existir: a fase 4 em diante ganhou tema próprio.
+    for (const caminho of [
+      'assets/audio/music/music_mycorrhiza_network_loop.ogg',
+      'assets/audio/music/music_pseudomonas_iron_competition_loop.ogg',
+      'assets/audio/music/music_bacillus_biofilm_loop.ogg',
+      'assets/audio/music/music_rhizoctonia_threat_loop.ogg',
+      'assets/audio/music/music_meloidogyne_infestation_loop.ogg',
+      'assets/audio/music/music_ralstonia_vascular_wilt_loop.ogg',
+    ]) {
+      const resposta = await audioGame.win.fetch(caminho, { method: 'HEAD' });
+      assert(resposta.ok, `404 em ${caminho}`);
+    }
+    record('phase 4-9 music files respond without 404');
+
+    // Os arquivos precisam existir de verdade: 404 aqui é erro de caminho.
+    for (const caminho of [
+      'assets/audio/music/music_title_menino_da_rizosfera_loop.ogg',
+      'assets/audio/music/music_rhizobium_symbiosis_loop.ogg',
+      'assets/audio/music/music_azospirillum_growth_loop.ogg',
+      'assets/audio/ambience/ambience_cave_base_loop.ogg',
+      'assets/audio/ambience/drops/gota_eco_01.ogg',
+      'assets/audio/fx/fx_player_jump.ogg',
+    ]) {
+      const resposta = await audioGame.win.fetch(caminho, { method: 'HEAD' });
+      assert(resposta.ok, `404 em ${caminho}`);
+    }
+    record('audio assets respond without 404');
+
+    // Mute pela tecla M, e de volta.
+    const mudoAntes = audioApi.isMuted();
+    assert(mudoAntes === false, 'depois do desbloqueio o som fica LIGADO, não mudo');
+    audioGame.win.dispatchEvent(new audioGame.win.KeyboardEvent('keydown', { code: 'KeyM', bubbles: true }));
+    await wait(60);
+    assert(audioApi.isMuted() !== mudoAntes, 'M deve alternar o mute');
+    const botaoSom = audioGame.win.document.querySelector('[data-mobile-action="toggle-sound"]');
+    assert(botaoSom, 'o botão de som precisa existir na barra de ferramentas');
+    assert(
+      botaoSom.getAttribute('aria-pressed') === String(audioApi.isMuted()),
+      'aria-pressed precisa refletir o estado do som',
+    );
+    audioGame.win.dispatchEvent(new audioGame.win.KeyboardEvent('keydown', { code: 'KeyM', bubbles: true }));
+    await wait(60);
+    assert(audioApi.isMuted() === mudoAntes, 'M de novo restaura o estado anterior');
+    record('mute toggles with M and updates the button');
+
+    // Reset (R) não pode duplicar contexto, ambientes nem scheduler.
+    const faixaAntesDoReset = audioApi.debug().musicTrackId;
+    audioGame.win.dispatchEvent(new audioGame.win.KeyboardEvent('keydown', { code: 'KeyR', bubbles: true }));
+    await wait(200);
+    const depoisDoReset = audioApi.debug();
+    assert(depoisDoReset.available === true, 'o áudio sobrevive ao reset');
+    assert(depoisDoReset.ambienceLayers.length === 5, 'o reset não duplica camadas de ambiente');
+    assert(
+      depoisDoReset.musicTrackId === faixaAntesDoReset,
+      'o reset volta para a fase 1: a mesma música continua, sem reiniciar',
+    );
+    record('reset does not duplicate audio');
+    audioGame.iframe.remove();
+
+    // O BOTÃO como primeira interação: antes o `pointerdown` desbloqueava e o
+    // `click` mutava no mesmo gesto — o jogador clicava e continuava sem som.
+    const botaoGame = await loadGame('/dist/index.html', 'test=1');
+    const botaoApi = botaoGame.win.miguelitoAudio;
+    const botao = botaoGame.win.document.querySelector('[data-mobile-action="toggle-sound"]');
+    assert(botaoApi.uiState().unlocked === false, 'instância nova começa bloqueada');
+
+    botao.click();
+    await waitFor(() => botaoApi.uiState().unlocked === true, 'o clique no botão deve desbloquear');
+    assert(botaoApi.isMuted() === false, 'o primeiro clique ATIVA — não muta no mesmo gesto');
+    await waitFor(
+      () => botaoApi.debug().musicTrackId !== null,
+      () => `e a música começa (estado: ${JSON.stringify(botaoApi.debug())})`,
+    );
+    record('first button click activates sound');
+
+    botao.click();
+    // `toggleGameAudio` é assíncrono: o estado vira antes de o botão redesenhar.
+    await waitFor(
+      () => botaoApi.isMuted() === true && botao.getAttribute('aria-pressed') === 'true',
+      () => `o segundo clique deve mutar e marcar o botão (mudo=${botaoApi.isMuted()}, pressed=${botao.getAttribute('aria-pressed')})`,
+    );
+
+    botao.click();
+    await waitFor(
+      () => botaoApi.isMuted() === false && botao.getAttribute('aria-pressed') === 'false',
+      () => `o terceiro clique deve restaurar (mudo=${botaoApi.isMuted()}, pressed=${botao.getAttribute('aria-pressed')})`,
+    );
+    await waitFor(() => botaoApi.uiState().audible === true, 'desmutar devolve o som de verdade');
+    record('button cycles activate → mute → unmute');
+    botaoGame.iframe.remove();
+
+    await wait(100);
+    assert(errors.length === 0, `console/page errors: ${errors.join('; ')}`);
+    built.iframe.remove();
+
+    // O Chromium headless deixa de entregar RAFs de forma confiavel depois de
+    // varios jogos no mesmo runner. Esta verificacao nao depende do loop e fica
+    // por ultimo para nao interferir nos fluxos integrados anteriores.
+    const mobile = await loadGame(
+      '/index.html',
+      'test=1',
+      { width: 844, height: 390 },
+    );
+    await waitFor(
+      () => mobile.win.document.querySelector('canvas')?.width === 1558,
+      'responsive canvas did not adapt to the mobile landscape viewport',
+    );
+    const mobileCanvas = mobile.win.document.querySelector('canvas');
+    assert(mobileCanvas.height === 720, 'mobile canvas must preserve logical height');
+    assert(
+      Math.abs(mobileCanvas.width / mobileCanvas.height - 844 / 390) < .001,
+      'mobile canvas must match the viewport aspect ratio without letterbox bars',
+    );
+    record('responsive mobile viewport fills the full width');
+    mobile.iframe.remove();
+
+    // Verify tutorial card PNG visual computed styles
+    const pngGame = await loadGame('/dist/index.html', 'test=1');
+    const pngWin = pngGame.win;
+    const pngDoc = pngWin.document;
+
+    const guiBtn = pngDoc.getElementById('tutorial-library-button');
+    if (guiBtn) guiBtn.click();
+    await wait(100);
+    const libCard = pngDoc.querySelector('.tutorial-library-card');
+    if (libCard) libCard.click();
+    await wait(100);
+
+    const panel = pngDoc.querySelector('.tutorial-panel');
+    const cardView = pngDoc.querySelector('.tutorial-card-view');
+    const cardArt = pngDoc.querySelector('.tutorial-card-art');
+    const paperContent = pngDoc.querySelector('.tutorial-paper-content');
+    const title = pngDoc.querySelector('#tutorial-title');
+    const bodyText = pngDoc.querySelector('.tutorial-page-body');
+    const nextBtn = pngDoc.querySelector('.tutorial-next');
+    const nextImg = pngDoc.querySelector('.tutorial-next img');
+
+    assert(panel && panel.classList.contains('tutorial-panel--card'), 'panel must have tutorial-panel--card class');
+    assert(cardView && cardView.getBoundingClientRect().width > 500, 'cardView width > 500px');
+    assert(cardView && cardView.getBoundingClientRect().height > 350, 'cardView height > 350px');
+    assert(cardArt && pngWin.getComputedStyle(cardArt).display !== 'none', 'cardArt visible');
+    assert(cardArt && cardArt.getBoundingClientRect().width > 500, 'cardArt width > 500px');
+    assert(paperContent && paperContent.getBoundingClientRect().width > 250, 'paper width > 250px');
+    assert(paperContent && paperContent.getBoundingClientRect().height > 200, 'paper height > 200px');
+    assert(title && title.textContent.trim().length > 0, 'title text not empty');
+    assert(bodyText && bodyText.textContent.trim().length > 0, 'body text not empty');
+    assert(nextBtn && nextBtn.getBoundingClientRect().width < 160, 'nextBtn width < 160px');
+    assert(nextImg && nextImg.getBoundingClientRect().width < 160, 'nextImg width < 160px');
+
+    record('tutorial card PNG visual styles verified');
+    pngGame.iframe.remove();
+
+    document.body.dataset.status = 'pass';
+    result.textContent = JSON.stringify({ status: 'pass', checks }, null, 2);
+  } catch (err) {
+    document.body.dataset.status = 'fail';
+    result.textContent = JSON.stringify({ status: 'fail', checks, errors, error: err.stack || err.message }, null, 2);
+  }
+})();
+</script>
+</body>
+</html>

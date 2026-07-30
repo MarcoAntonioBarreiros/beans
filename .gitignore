@@ -1,0 +1,14 @@
+node_modules/
+
+# Local Codex and scratch directories
+.agents/
+.codex/
+outputs/
+work/
+
+# OS and browser test artifacts
+.DS_Store
+Thumbs.db
+*.log
+
+*.zip

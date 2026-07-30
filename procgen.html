@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>Beans - Protótipo Procedural</title>
+  <style>
+    body { margin: 0; background: #111; color: #fff; font-family: monospace; overflow: hidden; display: flex; align-items: center; justify-content: center; height: 100vh; }
+    canvas { background: #222; image-rendering: pixelated; width: 100vw; height: 100vh; object-fit: contain; }
+    #debug { position: absolute; bottom: 10px; right: 10px; background: rgba(0,0,0,0.5); padding: 6px 10px; pointer-events: none; font-size: 11px; line-height: 1.4; max-width: 320px; border-radius: 6px; transition: opacity 0.3s; }
+    #debug.hidden { opacity: 0; }
+    #toast { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.75); padding: 10px 20px; border-radius: 10px; font-size: 14px; pointer-events: none; text-align: center; max-width: 500px; opacity: 0; transition: opacity 0.4s; border: 1px solid rgba(108,231,223,0.3); }
+    #toast.show { opacity: 1; }
+    #mission { position: absolute; top: 8px; left: 12px; font-size: 13px; pointer-events: none; color: rgba(255,255,255,0.7); }
+    #hud-bar { position: absolute; top: 8px; right: 12px; font-size: 12px; pointer-events: none; color: rgba(255,255,255,0.6); }
+  </style>
+</head>
+<body>
+  <div id="mission"></div>
+  <div id="hud-bar"></div>
+  <div id="toast"></div>
+  <div id="debug"></div>
+  <canvas width="1280" height="720"></canvas>
+  <script type="module" src="src/procgen/app.js"></script>
+</body>
+</html>

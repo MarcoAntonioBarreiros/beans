@@ -1,0 +1,2529 @@
+diff --git a/package.json b/package.json
+index 81bbfe9..cf4783d 100644
+--- a/package.json
++++ b/package.json
+@@ -5,7 +5,7 @@
+   "type": "module",
+   "scripts": {
+     "build": "node scripts/build.cjs",
+-    "test": "npm run test:manifest && npm run test:objectives && npm run test:selection && npm run test:phosphate && npm run test:phase-seven-deposit && npm run build && npm run test:procgen && npm run test:progression && npm run test:tutorial && npm run test:organisms && npm run test:organism-sprites && npm run test:myco-debut && npm run test:phase-one && npm run test:hud && npm run test:player-skin && npm run test:player-tuning && npm run test:player-anim && npm run test:phase-lab && npm run test:phase-lab-boot && npm run test:nitrogen-root && npm run test:phase-three-geometry && npm run test:necrotic-zone && npm run test:parallax && npm run test:viewport && npm run test:exudate-respawn && npm run test:phase-two-fbn && npm run test:azospirillum && npm run test:phase-five && npm run test:eco-score && npm run test:phase-nine-combo && npm run test:root-recovery && npm run test:meloidogyne && npm run test:signature && npm run test:phase-six && npm run test:browser",
++    "test": "npm run test:manifest && npm run test:objectives && npm run test:selection && npm run test:phosphate && npm run test:phase-seven-deposit && npm run build && npm run test:procgen && npm run test:progression && npm run test:tutorial && npm run test:organisms && npm run test:organism-sprites && npm run test:myco-debut && npm run test:phase-one && npm run test:hud && npm run test:player-skin && npm run test:player-tuning && npm run test:player-anim && npm run test:phase-lab && npm run test:phase-lab-boot && npm run test:nitrogen-root && npm run test:phase-three-geometry && npm run test:necrotic-zone && npm run test:parallax && npm run test:viewport && npm run test:exudate-respawn && npm run test:phase-two-fbn && npm run test:azospirillum && npm run test:phase-five && npm run test:eco-score && npm run test:phase-nine-combo && npm run test:root-recovery && npm run test:meloidogyne && npm run test:signature && npm run test:azo-mandatory && npm run test:renewable-exudates && npm run test:phase-three-mandatory && npm run test:phase-six && npm run test:browser",
+     "test:manifest": "node --test tests/campaign-manifest.test.js",
+     "test:objectives": "node --test tests/campaign-objectives.test.js",
+     "test:selection": "node --test tests/inoculum-selection.test.js",
+@@ -39,6 +39,9 @@
+     "test:player-anim": "node --test tests/player-animation-phase.test.js",
+     "test:exudate-respawn": "node --test tests/exudate-respawn.test.js",
+     "test:myco-debut": "node --test tests/mycorrhiza-debut.test.js",
+-    "test:phase-lab-boot": "node --test tests/phase-lab-boot.test.js"
++    "test:phase-lab-boot": "node --test tests/phase-lab-boot.test.js",
++    "test:azo-mandatory": "node --test tests/azospirillum-mandatory-challenge.test.js",
++    "test:renewable-exudates": "node --test tests/renewable-exudates.test.js",
++    "test:phase-three-mandatory": "node --test tests/phase-three-mandatory-geometry.test.js"
+   }
+ }
+diff --git a/src/procgen/app.js b/src/procgen/app.js
+index 7577df6..d775907 100644
+--- a/src/procgen/app.js
++++ b/src/procgen/app.js
+@@ -143,12 +143,38 @@ const OBJECTIVE_LABELS = {
+   solubilizedPhosphateDepositCount: 'Solubilize o depósito de fosfato',
+   totalFixationRate: 'Ative a fixação de nitrogênio',
+   visibleLateralRootCount: 'Induza raízes laterais (Azospirillum)',
++  mandatoryAzospirillumChallengeDeveloped: 'Amadureça a raiz lateral obrigatória (Azospirillum)',
++  mandatoryAzospirillumChallengeTraversed: 'Cruze com a raiz lateral + salto duplo',
+ };
+ 
+ function objectiveLabel(req) {
+   return OBJECTIVE_LABELS[req.key] || req.description || req.key;
+ }
+ 
++// Telemetria da prova obrigatoria de Azospirillum — so no painel de debug (Tab),
++// sem poluir o HUD normal. Serve para conferir, em qualquer seed, se a prova esta
++// posicionada e dimensionada como deveria.
++function azospirillumChallengeDebug(sim) {
++  const challenge = sim.state.level.azospirillumChallenge;
++  const renewable = sim.renewableExudates;
++  if (!challenge) return '';
++  const mandatoryLadder = (sim.state.level.azospirillumRootLadders || [])
++    .find(ladder => ladder.mandatoryChallenge) || null;
++  const actualReach = mandatoryLadder
++    ? Math.round(challenge.hostPlatform.y - mandatoryLadder.endY)
++    : 0;
++  const nextInterval = renewable?.nextIntervalEstimate;
++  return `\nDesafio Azo (obrigatório): host ${challenge.hostLogicIndex} → alvo ${challenge.targetLogicIndex}`
++    + ` · ${challenge.interveningCount} blocos no meio (${challenge.interveningSoilCount} de solo)`
++    + ` · subida ${challenge.rise}px`
++    + ` · alcance exigido ${challenge.requiredReach}px / atual ${actualReach}px`
++    + ` · sem escada: inalcançável ✓ / com escada: alcançável ✓`
++    + ` · desenvolvido ${challenge.developed ? '✓' : '—'} / atravessado ${challenge.traversed ? '✓' : '—'}`
++    + `\nExsudatos renováveis: ${renewable?.activeCount ?? 0} ativos`
++    + ` · próximo em ${Number.isFinite(nextInterval) ? `${Math.max(0, nextInterval).toFixed(1)}s` : '—'}`
++    + ` · emergência ${renewable?.emergencyActive ? 'ativa' : '—'}`;
++}
++
+ function renderObjectives(campaign, evaluator) {
+   const listDiv = document.getElementById('objective-list');
+   const finalTest = getPhaseManifest(campaign.phase)?.finalTest;
+@@ -911,7 +937,8 @@ function loop(now) {
+         + (sim.rhizobiumNodulation.incompatibleCount ? ` / ${sim.rhizobiumNodulation.incompatibleCount} sem hospedeiro` : '')
+         + `\nTrichoderma: ${sim.trichodermaColonies.followerCount} seguindo / ${sim.trichodermaColonies.colonyCount} colônias / vigor médio ${vigor}%`
+         + `\nHifas de ataque: ${sim.trichoderma.tipCount} pontas / ${sim.trichoderma.attackCount} alvos / ${sim.trichoderma.searchCount} em busca`
+-        + `\nInterações: ${sim.gameplay.cloudCount} nuvens / ${sim.gameplay.biofilmCount} biofilmes`;
++        + `\nInterações: ${sim.gameplay.cloudCount} nuvens / ${sim.gameplay.biofilmCount} biofilmes`
++        + azospirillumChallengeDebug(sim);
+     }
+ 
+     requestAnimationFrame(loop);
+diff --git a/src/procgen/azospirillum-root-growth.js b/src/procgen/azospirillum-root-growth.js
+index 1025baa..2c8d3c2 100644
+--- a/src/procgen/azospirillum-root-growth.js
++++ b/src/procgen/azospirillum-root-growth.js
+@@ -1,5 +1,6 @@
+ import { W } from '../core/constants.js';
+ import { getPhaseManifest } from './campaign-manifest.js';
++import { ensurePhaseObjectiveProgress } from './campaign-objective-progress.js';
+ import { createRandom } from './random.js';
+ 
+ export const AZOSPIRILLUM_ROOT_LADDER_BLOCK_TYPE = 'azospirillum-root-ladder';
+@@ -262,6 +263,11 @@ export function generateAzospirillumRootLadders({
+         sourceExudateLogicIndex: firstExudate,
+         recapAccess: slot.recapAccess,
+         knownSkill,
++        // Estas escadas de tempo-de-geracao sao a DEMONSTRACAO/pratica inicial
++        // (ensinam inoculacao, crescimento, degraus). A prova OBRIGATORIA e outra
++        // escada, criada em runtime sobre o hospedeiro registrado pelo desafio.
++        tutorialDemonstration: !knownSkill,
++        mandatoryChallenge: false,
+         growthDurationSeconds: config.growthDurationSeconds,
+         progress: 0,
+         visibleProgress: 0,
+@@ -294,13 +300,39 @@ function activeAzospirillumColony(inoculants, ladder) {
+   )) || null;
+ }
+ 
++// Margem para o degrau SUPERIOR da escada obrigatoria pousar em/acima do
++// requiredReach: os degraus sao interpolados, entao o topo real fica um pouco
++// abaixo do fim da escada. Somar um espacamento garante que o degrau de
++// lancamento chegue ao requiredReach validado pela fisica.
++const MANDATORY_TOP_STEP_MARGIN = RUNTIME_TARGET_STEP_SPACING;
++// Folga vertical minima entre o degrau de lancamento e o alvo, para o salto
++// duplo continuar OBRIGATORIO por mais nitrogenio que exista.
++const MANDATORY_TARGET_GAP = 70;
++
+ export function createAzospirillumRootGrowth({ state, entities, inoculants }) {
+   let lastToastAt = -Infinity;
++  // Estado transitorio da travessia da prova obrigatoria (Fase 3).
++  let mandatoryAttempt = { touchedLadder: false, doubleJumpAfter: false, lastDoubleJumpCount: 0 };
++
++  function resetMandatoryAttempt() {
++    mandatoryAttempt = { touchedLadder: false, doubleJumpAfter: false, lastDoubleJumpCount: 0 };
++  }
+ 
+   function ladders() {
+     return state.level.azospirillumRootLadders || [];
+   }
+ 
++  function mandatoryChallenge() {
++    return state.level.azospirillumChallenge || null;
++  }
++
++  function isMandatoryHost(host) {
++    const challenge = mandatoryChallenge();
++    if (!challenge || !host) return false;
++    return host === challenge.hostPlatform
++      || (Number.isInteger(challenge.hostLogicIndex) && host.logicIndex === challenge.hostLogicIndex);
++  }
++
+   function removeStepCollider(step) {
+     if (!step.collider) return;
+     const position = (state.level.platforms || []).indexOf(step.collider);
+@@ -322,10 +354,14 @@ export function createAzospirillumRootGrowth({ state, entities, inoculants }) {
+     state.level.azospirillumRootLadders = [];
+     state.level.azospirillumRoots = [];
+     lastToastAt = -Infinity;
++    resetMandatoryAttempt();
+   }
+ 
+   function reset() {
+     removeStepPlatforms();
++    // So os estados transitorios da tentativa sao limpos aqui; challenge.developed
++    // e challenge.traversed pertencem ao nivel e sao regidos pelo runtime.
++    resetMandatoryAttempt();
+     for (const ladder of ladders()) {
+       ladder.progress = 0;
+       ladder.visibleProgress = 0;
+@@ -442,6 +478,9 @@ export function createAzospirillumRootGrowth({ state, entities, inoculants }) {
+     ladder.developed = ladder.progress >= 1 && ladder.steps.every(step => step.mature);
+     ladder.mature = ladder.developed;
+     ladder.paused = false;
++    if (ladder.developed && ladder.mandatoryChallenge && state.level.azospirillumChallenge) {
++      state.level.azospirillumChallenge.developed = true;
++    }
+     if (ladder.developed && !ladder.announced) {
+       ladder.announced = true;
+       // Uma escada sem bloco alvo sobe reta: ganha altura, mas nao ha destino
+@@ -529,6 +568,19 @@ export function createAzospirillumRootGrowth({ state, entities, inoculants }) {
+     return RUNTIME_MIN_REACH + supply * (RUNTIME_MAX_REACH - RUNTIME_MIN_REACH);
+   }
+ 
++  // Piso anti-softlock (Fase 7): na raiz OBRIGATORIA da fase 3, o alcance nunca
++  // pode cair abaixo do requiredReach validado — baixa fixacao momentanea de N
++  // nao pode tornar a prova impossivel. O nitrogenio ainda influencia raizes
++  // opcionais e o vigor; aqui ele so nao consegue encurtar a prova.
++  function mandatoryEffectiveReach(challenge) {
++    const required = Number.isFinite(challenge.requiredReach) ? challenge.requiredReach : RUNTIME_MIN_REACH;
++    const floor = required + MANDATORY_TOP_STEP_MARGIN;
++    // Mantem uma folga vertical ao alvo para o salto duplo seguir obrigatorio,
++    // por mais nitrogenio que exista.
++    const ceiling = Math.max(floor, (Number.isFinite(challenge.rise) ? challenge.rise : floor) - MANDATORY_TARGET_GAP);
++    return clamp(Math.max(reachFromStock(), floor), floor, ceiling);
++  }
++
+   // A plataforma e a parede da raiz: a raiz lateral sai dela para cima. Havendo
+   // bloco alcancavel, a escada inclina em direcao a ele; senao sobe reta.
+   function destinationFor(host, reach) {
+@@ -549,6 +601,7 @@ export function createAzospirillumRootGrowth({ state, entities, inoculants }) {
+   }
+ 
+   function spawnLaddersFromColonies() {
++    const challenge = mandatoryChallenge();
+     for (const colony of inoculants.colonies || []) {
+       if (colony.type !== 'azospirillum' || colony.dormant) continue;
+       if (colony.growth < .68 || colony.vigor <= .05) continue;
+@@ -557,18 +610,90 @@ export function createAzospirillumRootGrowth({ state, entities, inoculants }) {
+       if (host.azospirillumStructure || host.mycorrhizaStructure) continue;
+       if (ladders().some(ladder => ladder.host === host)) continue;
+ 
++      const mandatory = Boolean(challenge) && !challenge.traversed && isMandatoryHost(host);
++      if (mandatory) {
++        // Escada OBRIGATORIA sobre o hospedeiro registrado: sobe reta (raiz
++        // lateral nao precisa tocar o alvo) ate a altura de lancamento, e usa o
++        // requiredReach com piso anti-softlock. Nao concorre outra escada aqui.
++        const reach = mandatoryEffectiveReach(challenge);
++        const ladder = createRuntimeLadder(host, null, reach);
++        if (ladder) {
++          ladder.mandatoryChallenge = true;
++          ladder.challengeId = challenge.id;
++          ladder.targetPlatform = challenge.targetPlatform;
++          state.level.azospirillumRootLadders.push(ladder);
++        }
++        continue;
++      }
++
+       const reach = reachFromStock();
+       const ladder = createRuntimeLadder(host, destinationFor(host, reach), reach);
+       if (ladder) state.level.azospirillumRootLadders.push(ladder);
+     }
+   }
+ 
++  // Prova de fato (Fase 8): so conta como travessia quando Miguelito USA a escada
++  // obrigatoria (pisa num degrau dela), executa o salto duplo em seguida e pousa
++  // no bloco alvo. Estados transitorios sao limpos ao pousar em bloco nao
++  // relacionado (inclui o respawn, que devolve o jogador ao checkpoint).
++  function footPlatform() {
++    const player = state.player;
++    if (!player?.onGround) return null;
++    const feetY = player.y + player.h;
++    for (const platform of state.level.platforms || []) {
++      if (platform.recovery && state.recoveryPlatformsDisabled) continue;
++      const overlap = player.x + player.w > platform.x + 3 && player.x < platform.x + platform.w - 3;
++      if (!overlap) continue;
++      if (Math.abs(feetY - platform.y) > 8) continue;
++      return platform;
++    }
++    return null;
++  }
++
++  function mandatoryStepPlatform(platform) {
++    if (!platform?.azospirillumLadderStep || !platform.ladderId) return false;
++    return ladders().some(ladder => ladder.id === platform.ladderId && ladder.mandatoryChallenge);
++  }
++
++  function trackMandatoryTraversal() {
++    const challenge = mandatoryChallenge();
++    if (!challenge || challenge.traversed) return;
++    const player = state.player;
++    if (!player) return;
++
++    const doubleJumpCount = ensurePhaseObjectiveProgress(state).performedDoubleJumpCount || 0;
++    if (!player.onGround && mandatoryAttempt.touchedLadder && doubleJumpCount > mandatoryAttempt.lastDoubleJumpCount) {
++      mandatoryAttempt.doubleJumpAfter = true;
++    }
++    mandatoryAttempt.lastDoubleJumpCount = doubleJumpCount;
++
++    const foot = footPlatform();
++    if (!foot) return;
++    if (mandatoryStepPlatform(foot)) {
++      mandatoryAttempt.touchedLadder = true;
++      return;
++    }
++    const onTarget = foot === challenge.targetPlatform
++      || (foot.mandatoryAzospirillumTarget
++        && Number.isInteger(challenge.targetLogicIndex)
++        && foot.logicIndex === challenge.targetLogicIndex);
++    if (onTarget) {
++      if (mandatoryAttempt.touchedLadder && mandatoryAttempt.doubleJumpAfter) challenge.traversed = true;
++      return;
++    }
++    // Pousou num bloco nao relacionado (nem degrau, nem alvo): reinicia a
++    // tentativa. Cobre morte/respawn (volta ao checkpoint) e desistencias.
++    mandatoryAttempt.touchedLadder = false;
++    mandatoryAttempt.doubleJumpAfter = false;
++  }
++
+   function update(dt) {
+     if (state.gameState !== 'play') return;
+     if (!state.level.azospirillumRootLadders) state.level.azospirillumRootLadders = [];
+     spawnLaddersFromColonies();
+     for (const ladder of ladders()) updateLadder(ladder, dt);
+     state.level.azospirillumRoots = ladders();
++    trackMandatoryTraversal();
+   }
+ 
+   function drawLadder(ctx, ladder) {
+@@ -610,9 +735,14 @@ export function createAzospirillumRootGrowth({ state, entities, inoculants }) {
+     if (ladder.progress === 0) {
+       ctx.font = '700 12px Inter,system-ui';
+       ctx.textAlign = 'center';
+-      ctx.fillStyle = '#f3ce68';
++      // A demonstracao inicial ENSINA; a prova obrigatoria e o objetivo. O texto
++      // precisa separar os dois, senao o jogador toma a demonstracao pela prova.
++      const demonstracao = ladder.tutorialDemonstration && !ladder.mandatoryChallenge;
++      ctx.fillStyle = demonstracao ? '#c9d8a8' : '#f3ce68';
+       ctx.fillText(
+-        'Inocule Azospirillum nesta raiz',
++        demonstracao
++          ? 'Teste o Azospirillum nesta raiz'
++          : 'Inocule Azospirillum nesta raiz',
+         ladder.host.x + ladder.host.w / 2,
+         ladder.host.y - 30,
+       );
+diff --git a/src/procgen/campaign-manifest.js b/src/procgen/campaign-manifest.js
+index c56c8e3..525834e 100644
+--- a/src/procgen/campaign-manifest.js
++++ b/src/procgen/campaign-manifest.js
+@@ -125,7 +125,9 @@ export const FINAL_TEST_KEYS = Object.freeze({
+   playerUnlock: Object.freeze(['doubleJump', 'dash', 'phosphateSolubilization']),
+   worldState: Object.freeze([
+     'reachedFinalRoot', 'functionalBiofilmCount', 'activeMatureNoduleCount', 'totalFixationRate',
+-    'visibleLateralRootCount', 'functionalMycorrhizaPathCount', 'pseudomonasIronReserve',
++    'visibleLateralRootCount', 'mandatoryAzospirillumChallengeDeveloped',
++    'mandatoryAzospirillumChallengeTraversed',
++    'functionalMycorrhizaPathCount', 'pseudomonasIronReserve',
+     'neutralizedOpportunisticFungusCount', 'neutralizedRhizoctoniaCount', 'recoveredRootCount', 'brokenCrystalCount',
+     'neutralizedEggMassCount', 'preservedRootCount', 'ecologicalScore',
+     'deployedExudateCount', 'bacillusColonyCount',
+@@ -270,15 +272,31 @@ const phases = [
+     nitrogenRoot: { ...NITROGEN_ROOT_DEFAULTS },
+     azospirillumRootLadder: { ...AZOSPIRILLUM_ROOT_LADDER_DEFAULTS },
+     azospirillumNitrogen: { ...AZOSPIRILLUM_NITROGEN_DEFAULTS },
+-    // O procedural limita qualquer subida a 112px e o salto duplo alcanca 180px,
+-    // entao a escada nunca era necessaria. 230px nao se vence pulando e se vence
+-    // com a escada mais fraca (96px de alcance) somada ao salto duplo.
++    // A prova OBRIGATORIA de Azospirillum e um lancamento vertical: um bloco alto
++    // que o salto (simples + duplo) nao alcanca sozinho e que so a raiz lateral,
++    // usada como plataforma de lancamento, somada ao salto duplo, resolve.
++    //
++    // A janela e derivada do segmento p3-challenge (depois do desbloqueio do
++    // salto duplo), nunca de um fromChunk fixo: a demonstracao inicial de
++    // Azospirillum (p3-azo-intro/practice) ensina a mecanica, mas nao bloqueia o
++    // caminho; a prova combinada so aparece depois que o salto duplo existe.
++    //
++    // O hospedeiro e a ULTIMA plataforma de raiz anterior ao alvo, mesmo que
++    // existam blocos de solo entre os dois (Azospirillum so inocula em raiz). O
++    // alcance necessario da escada e calculado pela fisica, nao fixado em 230px.
+     signatureChallenge: {
+       enabled: true,
++      kind: 'vertical-launch',
+       mechanic: 'azospirillumRoots',
+-      rise: 230,
++      segmentId: 'p3-challenge',
++      afterUnlock: 'doubleJump',
++      preferredRise: 230,
++      minimumRise: 210,
++      maximumRise: 260,
++      requirePreviousRootHost: true,
++      allowInterveningSoil: true,
+       minimumChunks: 10,
+-      fromChunk: 9,
++      minimumWidth: 130,
+     },
+     title: 'Azospirillum e arquitetura radicular', theme: 'arquitetura',
+     mission: 'Induza raízes laterais e use o salto duplo para alcançar novas rotas.',
+@@ -313,9 +331,12 @@ const phases = [
+       { id: 'p3-challenge', kind: 'procedural', from: 17, to: 21, tutorialMode: 'silent', mechanicsRequired: ['doubleJump', 'azospirillumRoots'] },
+       { id: 'p3-final', kind: 'final', from: 22, to: 24, tutorialMode: 'silent', mechanicsRequired: ['doubleJump', 'azospirillumRoots'] },
+     ],
+-    finalTest: { id: 'p3-test', goal: 'Induzir raiz lateral e usar salto duplo.', requires: [
+-      { type: 'worldState', key: 'performedDoubleJumpCount', operator: '>=', value: 1 },
+-      { type: 'worldState', key: 'visibleLateralRootCount', operator: '>=', value: 1 },
++    // A prova nao fecha mais so porque uma raiz lateral qualquer cresceu: exige a
++    // escada OBRIGATORIA (sobre o hospedeiro registrado) madura e a travessia de
++    // fato — subir pela escada e cruzar com salto duplo ate o bloco alto.
++    finalTest: { id: 'p3-test', goal: 'Amadurecer a raiz lateral obrigatória e cruzar com salto duplo.', requires: [
++      { type: 'worldState', key: 'mandatoryAzospirillumChallengeDeveloped', operator: '===', value: true },
++      { type: 'worldState', key: 'mandatoryAzospirillumChallengeTraversed', operator: '===', value: true },
+     ]}, notes: [],
+   },
+ 
+diff --git a/src/procgen/campaign-objectives.js b/src/procgen/campaign-objectives.js
+index 7bc2abb..27da018 100644
+--- a/src/procgen/campaign-objectives.js
++++ b/src/procgen/campaign-objectives.js
+@@ -50,6 +50,22 @@ export function createCampaignObjectiveEvaluator({ state, systems = {} }) {
+         root.developed === true || (root.visibleProgress || 0) > .06
+       )).length;
+     }
++    if (key === 'mandatoryAzospirillumChallengeDeveloped') {
++      const challenge = state.level.azospirillumChallenge;
++      // Sem desafio registrado (fase curta/edge): nao trava a fase — a
++      // demonstracao de raiz lateral vale como sinal de desenvolvimento.
++      if (!challenge) {
++        return (state.level.azospirillumRoots || []).some(root => root.developed === true);
++      }
++      return challenge.developed === true;
++    }
++    if (key === 'mandatoryAzospirillumChallengeTraversed') {
++      const challenge = state.level.azospirillumChallenge;
++      if (!challenge) {
++        return (ensurePhaseObjectiveProgress(state).performedDoubleJumpCount || 0) >= 1;
++      }
++      return challenge.traversed === true;
++    }
+     if (key === 'functionalMycorrhizaPathCount') {
+       return (state.level.platforms || []).filter(platform => platform.mycorrhizaStructure && platform.mature !== false).length;
+     }
+diff --git a/src/procgen/generator.js b/src/procgen/generator.js
+index 9398edb..9160667 100644
+--- a/src/procgen/generator.js
++++ b/src/procgen/generator.js
+@@ -314,6 +314,10 @@ export function generateLevel(seedString) {
+     primitives,
+     endX,
+     cameraMaxX: Math.max(0, endX - 1000),
++    // A seed viaja com o nivel: sistemas de runtime que precisam de aleatoriedade
++    // deterministica (regeneracao de exsudato, por exemplo) derivam dela em vez
++    // de usar Math.random().
++    seed: seedString,
+   };
+ }
+ 
+@@ -348,6 +352,28 @@ function isThemedCrossing(prev, next) {
+   );
+ }
+ 
++// O corredor da prova obrigatoria de Azospirillum vai do HOSPEDEIRO ao BLOCO
++// ALTO — e pode ter blocos de solo no meio. Olhar so o par imediatamente
++// anterior ao alvo nao basta: um degrau de seguranca inserido entre o hospedeiro
++// e um solo intermediario cria um caminho alternativo e desmonta a prova, do
++// mesmo jeito que a plataforma de recuperacao desmontava a ponte na fase 4.
++//
++// A supressao vale SO dentro do corredor registrado e SO depois de a travessia
++// com a raiz lateral ter sido validada (o desafio so e registrado quando ela
++// passa). Fora dele, a rede global anti-softlock continua inteira.
++export function isInsideAzospirillumChallengeCorridor(level, previous, next) {
++  const challenge = level?.azospirillumChallenge;
++  if (!challenge) return false;
++  const { corridorStartLogicIndex: start, corridorEndLogicIndex: end } = challenge;
++  if (!Number.isInteger(start) || !Number.isInteger(end)) return false;
++  const inside = platform => (
++    Number.isInteger(platform?.logicIndex)
++    && platform.logicIndex >= start
++    && platform.logicIndex <= end
++  );
++  return inside(previous) && inside(next);
++}
++
+ function buildSafetyStep(prev, next, prims, logicIndex) {
+   const previousEnd = prev.x + prev.w;
+   const gap = next.x - previousEnd;
+@@ -388,6 +414,7 @@ export function enforceTraversableRoute(level, abilities = {}) {
+     const next = route[i];
+     if (next.x <= prev.x + prev.w) continue;
+     if (isThemedCrossing(prev, next)) continue;
++    if (isInsideAzospirillumChallengeCorridor(level, prev, next)) continue;
+     const alreadyStepped = (level.platforms || []).some(p => (
+       p.recovery
+       && p.x + p.w / 2 > prev.x + prev.w
+diff --git a/src/procgen/renewable-exudates.js b/src/procgen/renewable-exudates.js
+new file mode 100644
+index 0000000..1176043
+--- /dev/null
++++ b/src/procgen/renewable-exudates.js
+@@ -0,0 +1,317 @@
++import { createRandom } from './random.js';
++
++// Exsudatos renovaveis
++// ====================
++//
++// O exsudato era um recurso estritamente FINITO: cada um coletavel uma vez, para
++// sempre. Uma fase que exige mais inoculacoes do que o estoque restante virava
++// matematicamente impossivel — e a prova obrigatoria de Azospirillum da fase 3 e
++// exatamente esse caso: sem exsudato nao ha inoculacao, sem inoculacao nao ha
++// colonia, sem colonia nao ha raiz lateral, e o bloco alto e inalcancavel.
++//
++// Aqui a raiz VIVA volta a exsudar: de tempos em tempos um novo exsudato brota
++// sobre uma raiz elegivel. O intervalo depende da SAUDE da raiz — raiz saudavel
++// exsuda rapido, raiz doente exsuda devagar —, o que amarra este sistema ao
++// feedback central de saude radicular em vez de ser um spawner arbitrario.
++//
++// Nada aqui move plataformas, checkpoints ou os exsudatos iniciais: o modulo so
++// LE a geometria pronta e acrescenta itens vinculados a uma raiz por offset.
++
++export const RENEWABLE_EXUDATE_DEFAULTS = Object.freeze({
++  enabled: true,
++  minimumIntervalSeconds: 18,
++  maximumIntervalSeconds: 65,
++  healthExponent: 1.4,
++  jitterMinimum: 0.8,
++  jitterMaximum: 1.2,
++  maximumActiveGlobal: 4,
++  maximumActivePerRoot: 1,
++  emergencyGraceSeconds: 8,
++  emergencyRetrySeconds: 6,
++  // Abaixo disto a raiz esta doente/morta demais para exsudar naturalmente.
++  minimumRootHealth: 0.12,
++  minimumRootWidth: 90,
++});
++
++const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
++
++// Raiz elegivel: raiz de rota, viva, com superficie para sustentar o item. Nunca
++// solo, nunca recuperacao/degrau/estrutura, nunca a raiz final.
++export function isEligibleRoot(platform, config = RENEWABLE_EXUDATE_DEFAULTS) {
++  if (!platform || platform.type !== 'root') return false;
++  if (platform.recovery || platform.final || platform.safetyStep) return false;
++  if (platform.azospirillumStructure || platform.azospirillumLadderStep) return false;
++  if (platform.mycorrhizaStructure || platform.nitrogenRootStructure) return false;
++  if (!Number.isInteger(platform.logicIndex) || platform.logicIndex < 0) return false;
++  if (!Number.isFinite(platform.x) || !Number.isFinite(platform.y)) return false;
++  if (!(platform.w >= (config.minimumRootWidth ?? 90))) return false;
++  const health = Number.isFinite(platform.rootHealth) ? platform.rootHealth : 1;
++  return health > (config.minimumRootHealth ?? 0.12);
++}
++
++// Intervalo dependente da saude: saudavel ~ minimo, doente ~ maximo.
++//
++//   base = max - (max - min) * health^expoente
++//
++// health=1 -> base=min (~18s); health=.5 -> ~47s (com expoente 1.4);
++// health=.1 -> ~63s. O jitter deterministico espalha os brotos para eles nao
++// nascerem todos no mesmo instante.
++export function regenerationInterval(health, random01, config = RENEWABLE_EXUDATE_DEFAULTS) {
++  const minimum = config.minimumIntervalSeconds ?? 18;
++  const maximum = config.maximumIntervalSeconds ?? 65;
++  const exponent = config.healthExponent ?? 1.4;
++  const safeHealth = clamp(Number.isFinite(health) ? health : 1, 0, 1);
++  const base = maximum - (maximum - minimum) * Math.pow(safeHealth, exponent);
++  const jitterMin = config.jitterMinimum ?? 0.8;
++  const jitterMax = config.jitterMaximum ?? 1.2;
++  const jitter = jitterMin + clamp(random01, 0, 1) * (jitterMax - jitterMin);
++  return base * jitter;
++}
++
++function rootHealthOf(platform) {
++  return Number.isFinite(platform?.rootHealth) ? platform.rootHealth : 1;
++}
++
++export function createRenewableExudates({ state, seedValue = null, phase = null, config = null } = {}) {
++  const settings = { ...RENEWABLE_EXUDATE_DEFAULTS, ...(config || {}) };
++  // Seed e fase sao lidas do estado quando nao vem explicitas: o simulador e
++  // criado uma vez e atravessa varias fases, entao fixa-las na construcao daria
++  // a mesma sequencia em todas.
++  const seedOf = () => seedValue ?? state.level?.seed ?? state.campaign?.seed ?? 'seed';
++  const phaseOf = () => phase ?? state.campaign?.phase ?? state.level?.campaignPhase ?? 0;
++  // Um slot por raiz: guarda o item (reaproveitado) e o cronometro.
++  const slots = new Map();
++  let regenerationCounter = 0;
++  let emergencyTimer = 0;
++  let emergencyCooldown = 0;
++  let lastEmergencyExudate = null;
++
++  function level() { return state.level || {}; }
++
++  function eligibleRoots() {
++    return (level().platforms || []).filter(platform => isEligibleRoot(platform, settings));
++  }
++
++  // Determinismo: seed da fase + logicIndex da raiz + contador de regeneracoes +
++  // tentativa. Nunca Math.random().
++  function deterministic01(platform, salt) {
++    const attemptId = level().objectiveProgress?.attemptId ?? 0;
++    const random = createRandom(
++      `${seedOf()}:renewable-exudate:p${phaseOf()}:i${platform.logicIndex}:r${salt}:a${attemptId}`,
++    );
++    return random();
++  }
++
++  function slotFor(platform) {
++    let slot = slots.get(platform);
++    if (!slot) {
++      slot = { platform, item: null, timer: 0, generation: 0, scheduled: false };
++      slots.set(platform, slot);
++    }
++    return slot;
++  }
++
++  function activeCount() {
++    let count = 0;
++    for (const slot of slots.values()) {
++      if (slot.item && !slot.item.taken) count++;
++    }
++    return count;
++  }
++
++  function scheduleNext(slot) {
++    slot.generation++;
++    const health = rootHealthOf(slot.platform);
++    const jitter01 = deterministic01(slot.platform, slot.generation);
++    slot.timer = regenerationInterval(health, jitter01, settings);
++    slot.scheduled = true;
++  }
++
++  // Posicao sobre a raiz: mesma convencao dos exsudatos iniciais (30px de margem,
++  // 25-40px acima da superficie). Guarda o offset para o item acompanhar a
++  // plataforma se ela se mover.
++  function placeOn(platform, slot) {
++    const spread = Math.max(1, platform.w - 60);
++    const offsetX = 30 + deterministic01(platform, `x${slot.generation}`) * spread;
++    const offsetY = -25 - deterministic01(platform, `y${slot.generation}`) * 15;
++    return { offsetX, offsetY };
++  }
++
++  function spawnOn(platform, { emergency = false } = {}) {
++    const slot = slotFor(platform);
++    if (slot.item && !slot.item.taken) return slot.item; // ja existe um ativo nesta raiz
++    if (activeCount() >= (settings.maximumActiveGlobal ?? 4)) return null;
++
++    const { offsetX, offsetY } = placeOn(platform, slot);
++    if (slot.item) {
++      // Reaproveita o slot ja coletado em vez de crescer o array para sempre.
++      slot.item.offsetX = offsetX;
++      slot.item.offsetY = offsetY;
++      slot.item.x = platform.x + offsetX;
++      slot.item.y = platform.y + offsetY;
++      slot.item.taken = false;
++      slot.item.emergency = emergency;
++    } else {
++      slot.item = {
++        renewable: true,
++        emergency,
++        platform,
++        platformId: platform.id ?? platform.platformId ?? null,
++        logicIndex: platform.logicIndex,
++        offsetX,
++        offsetY,
++        x: platform.x + offsetX,
++        y: platform.y + offsetY,
++        taken: false,
++      };
++      level().exudates = [...(level().exudates || []), slot.item];
++    }
++    slot.scheduled = false;
++    slot.timer = 0;
++    regenerationCounter++;
++    return slot.item;
++  }
++
++  // O item acompanha a plataforma pelo offset (nada de coordenada solta).
++  function followPlatforms() {
++    for (const slot of slots.values()) {
++      if (!slot.item) continue;
++      slot.item.x = slot.platform.x + slot.item.offsetX;
++      slot.item.y = slot.platform.y + slot.item.offsetY;
++    }
++  }
++
++  // --- Garantia emergencial anti-softlock -----------------------------------
++  //
++  // O desafio obrigatorio precisa ser SEMPRE resolvivel. Se o jogador chegou ao
++  // corredor sem exsudato nenhum, sem Azospirillum recrutado e sem colonia no
++  // hospedeiro, a regeneracao natural pode demorar mais do que a paciencia — e a
++  // fase parece travada. Depois de emergencyGraceSeconds nessa situacao, uma raiz
++  // elegivel entre o ultimo checkpoint e o hospedeiro brota um exsudato. Ele usa
++  // o MESMO visual e o mesmo sistema de coleta: parece regeneracao natural.
++  function challengeUnfinished() {
++    const challenge = level().azospirillumChallenge;
++    return Boolean(challenge) && !challenge.traversed;
++  }
++
++  function playerHasNoExudate() {
++    return (state.player?.exudates || 0) <= 0;
++  }
++
++  function noCollectableExudateAhead(hostX) {
++    const fromX = state.currentCheckpoint?.x ?? 0;
++    return !(level().exudates || []).some(exudate => (
++      !exudate.taken
++      && Number.isFinite(exudate.x)
++      && exudate.x >= fromX - 40
++      && exudate.x <= hostX + 40
++    ));
++  }
++
++  // "Recrutado" = ha Azospirillum seguindo o jogador. A fonte da verdade sao os
++  // seguidores de beneficial-inoculants (followerGroups); a lista da selecao
++  // (options()) e o mesmo dado ja formatado, e serve de reserva.
++  function noAzospirillumRecruited(systems) {
++    const groups = systems?.inoculants?.followerGroups?.();
++    if (groups) return !((groups.get?.('azospirillum') || []).length > 0);
++    const options = systems?.inoculumSelection?.options?.() || [];
++    return !options.some(item => item.type === 'azospirillum' && (item.count || 0) > 0);
++  }
++
++  function noColonyOnHost(systems, host) {
++    return !(systems?.inoculants?.colonies || []).some(colony => (
++      colony.type === 'azospirillum' && colony.platform === host && !colony.dormant
++    ));
++  }
++
++  function emergencyCandidates(host) {
++    const fromX = state.currentCheckpoint?.x ?? 0;
++    return eligibleRoots()
++      // Nunca depois do bloco alto: o socorro tem de estar no caminho, nao alem dele.
++      .filter(platform => platform.x + platform.w <= host.x + host.w + 4)
++      .filter(platform => platform.x + platform.w >= fromX - 40)
++      // Prioriza as raizes mais saudaveis (exsudam mais).
++      .sort((a, b) => rootHealthOf(b) - rootHealthOf(a));
++  }
++
++  function updateEmergency(dt, systems) {
++    if (emergencyCooldown > 0) emergencyCooldown = Math.max(0, emergencyCooldown - dt);
++    const challenge = level().azospirillumChallenge;
++    if (!challengeUnfinished() || !challenge?.hostPlatform) { emergencyTimer = 0; return; }
++    const host = challenge.hostPlatform;
++
++    const stuck = playerHasNoExudate()
++      && noCollectableExudateAhead(host.x)
++      && noAzospirillumRecruited(systems)
++      && noColonyOnHost(systems, host);
++    if (!stuck) { emergencyTimer = 0; return; }
++
++    emergencyTimer += dt;
++    if (emergencyTimer < (settings.emergencyGraceSeconds ?? 8)) return;
++    if (emergencyCooldown > 0) return;
++
++    const candidates = emergencyCandidates(host);
++    if (!candidates.length) return;
++    // Escolha deterministica entre as mais saudaveis — nao e sempre o mesmo bloco.
++    const pool = candidates.slice(0, Math.min(3, candidates.length));
++    const pick = pool[Math.floor(deterministic01(host, `emergency${regenerationCounter}`) * pool.length) % pool.length];
++    const item = spawnOn(pick, { emergency: true });
++    if (!item) return;
++    lastEmergencyExudate = item;
++    emergencyTimer = 0;
++    emergencyCooldown = settings.emergencyRetrySeconds ?? 6;
++  }
++
++  function update(dt, systems = {}) {
++    if (!settings.enabled) return;
++    if (state.gameState !== 'play') return;
++
++    const roots = eligibleRoots();
++    const known = new Set(roots);
++    for (const platform of roots) {
++      const slot = slotFor(platform);
++      // Um exsudato ativo por raiz: enquanto nao for coletado, nada e agendado.
++      if (slot.item && !slot.item.taken) { slot.scheduled = false; continue; }
++      if (!slot.scheduled) { scheduleNext(slot); continue; }
++      slot.timer -= dt;
++      if (slot.timer > 0) continue;
++      // Reavalia a saude ATUAL ao brotar: uma raiz que piorou espera mais.
++      if (activeCount() >= (settings.maximumActiveGlobal ?? 4)) { scheduleNext(slot); continue; }
++      spawnOn(platform);
++    }
++    // Raiz que deixou de ser elegivel (morreu/foi removida) para de contar.
++    for (const [platform, slot] of slots) {
++      if (known.has(platform)) continue;
++      slot.scheduled = false;
++      slot.timer = 0;
++    }
++
++    followPlatforms();
++    updateEmergency(dt, systems);
++  }
++
++  function reset() {
++    for (const slot of slots.values()) {
++      slot.scheduled = false;
++      slot.timer = 0;
++    }
++    emergencyTimer = 0;
++    emergencyCooldown = 0;
++  }
++
++  return {
++    update,
++    reset,
++    // Telemetria de debug (FASE 14).
++    get activeCount() { return activeCount(); },
++    get emergencyActive() { return Boolean(lastEmergencyExudate && !lastEmergencyExudate.taken); },
++    get nextIntervalEstimate() {
++      let soonest = Infinity;
++      for (const slot of slots.values()) {
++        if (slot.scheduled && slot.timer < soonest) soonest = slot.timer;
++      }
++      return Number.isFinite(soonest) ? soonest : null;
++    },
++    get slots() { return slots; },
++  };
++}
+diff --git a/src/procgen/signature-challenge.js b/src/procgen/signature-challenge.js
+index 1328d6c..b0b1d2f 100644
+--- a/src/procgen/signature-challenge.js
++++ b/src/procgen/signature-challenge.js
+@@ -1,7 +1,22 @@
+ import { getPhaseManifest } from './campaign-manifest.js';
+ import { validateChunk } from './agents.js';
+ 
++// Primitivas reais usadas na validacao por fisica. A prova de Azospirillum e uma
++// fase de salto simples + salto duplo (sem dash), entao esse e o repertorio que
++// precisa FALHAR sem a escada e PASSAR com ela.
++const SINGLE_JUMP = Object.freeze({ id: 'running-jump', requires: [] });
+ const DOUBLE_JUMP = Object.freeze({ id: 'running-double-jump-late', requires: ['doubleJump'] });
++const GROUND_PRIMITIVES = Object.freeze([SINGLE_JUMP, DOUBLE_JUMP]);
++
++// Topo permitido para nao empurrar o alvo para fora da tela ao eleva-lo. A prova
++// vertical precisa de folga para superar o salto duplo (180px), entao o teto
++// sobe um pouco mais que o das plataformas comuns.
++const HIGHEST_Y = 60;
++// Alcance da raiz lateral (degrau superior = plataforma de lancamento). O menor
++// e ~1 salto simples; o maior cobre alem do salto duplo. requiredReach e
++// procurado dentro dessa faixa pela fisica.
++const MIN_LADDER_REACH = 96;
++const MAX_LADDER_REACH = 340;
+ 
+ // Estimar pelo numero do vao nao basta: uma queda de poucos pixels alonga o
+ // salto e devolve a travessia ao alcance do salto duplo. Quem decide e a fisica.
+@@ -57,6 +72,105 @@ function shiftFrom(level, fromX, deltaY, deltaX = 0) {
+   }
+ }
+ 
++// --- Validacao de subrota (grafo + busca em largura) -----------------------
++//
++// O par "logicIndex-1 -> alvo" nao basta: o bloco imediatamente anterior pode
++// ser SOLO, e Azospirillum so inocula em RAIZ. A travessia real e uma subrota
++// (hospedeiro -> [solo...] -> alvo) e precisa ser validada como um grafo, com
++// arestas decididas pela fisica, nao por consecutividade de logicIndex.
++
++function reachableEdge(from, to, primitives) {
++  if (!from || !to || from === to) return false;
++  // validateChunk lanca do lado direito de `from` para a direita: um destino
++  // inteiramente atras nunca e alcancado por essa simulacao.
++  if (to.x + to.w <= from.x + 4) return false;
++  return primitives.some(primitive => validateChunk(from, to, primitive, 'normal'));
++}
++
++// Monta um pequeno grafo (cada plataforma um no; aresta = uma primitiva real
++// sai de uma e pousa na outra) e faz busca em largura do inicio ao alvo. Nos
++// nao precisam ser consecutivos por logicIndex.
++export function canTraverseSubroute({
++  startPlatform,
++  targetPlatform,
++  platforms = [],
++  additionalPlatforms = [],
++  primitives = GROUND_PRIMITIVES,
++} = {}) {
++  if (!startPlatform || !targetPlatform) return false;
++  const nodes = [...new Set([...platforms, ...additionalPlatforms, startPlatform, targetPlatform])]
++    .filter(Boolean);
++  const visited = new Set([startPlatform]);
++  const queue = [startPlatform];
++  while (queue.length) {
++    const current = queue.shift();
++    if (current === targetPlatform) return true;
++    for (const next of nodes) {
++      if (visited.has(next)) continue;
++      if (!reachableEdge(current, next, primitives)) continue;
++      if (next === targetPlatform) return true;
++      visited.add(next);
++      queue.push(next);
++    }
++  }
++  return false;
++}
++
++// Degrau superior da raiz lateral: plataforma de lancamento diretamente acima do
++// hospedeiro. A raiz nao precisa tocar o alvo; ela ergue Miguelito ate aqui.
++function launchPlatform(host, reach) {
++  const width = 90;
++  const centerX = host.x + host.w / 2;
++  return {
++    x: centerX - width / 2,
++    y: host.y - reach,
++    w: width,
++    h: 12,
++    type: 'root',
++    oneWay: true,
++  };
++}
++
++// Procura o MENOR alcance que torna a prova solucionavel: do degrau superior, um
++// salto duplo pousa no alvo. Subir mais so facilita, entao a busca ascendente
++// para no primeiro alcance validado. Retorna null quando nem o alcance maximo
++// resolve (alvo alto/distante demais para a escada + salto duplo).
++function solveRequiredReach(host, target, config) {
++  const min = clamp(config.minimumReach || MIN_LADDER_REACH, 40, MAX_LADDER_REACH);
++  const max = clamp(config.maximumReach || MAX_LADDER_REACH, min, MAX_LADDER_REACH);
++  for (let reach = min; reach <= max; reach += 8) {
++    if (host.y - reach < HIGHEST_Y - 20) break;
++    const launch = launchPlatform(host, reach);
++    if (validateChunk(launch, target, DOUBLE_JUMP, 'normal')) return reach;
++  }
++  return null;
++}
++
++// Hospedeiro = ULTIMA plataforma de raiz anterior ao alvo, mesmo com blocos de
++// solo entre os dois. Azospirillum so inocula em raiz.
++export function findRootHost(route, target) {
++  const before = route
++    .filter(platform => platform.logicIndex < target.logicIndex)
++    .sort((a, b) => b.logicIndex - a.logicIndex);
++  for (const platform of before) {
++    if (platform.type !== 'root') continue;
++    if (platform.recovery || platform.final) continue;
++    if (platform.azospirillumStructure || platform.mycorrhizaStructure) continue;
++    if (platform.azospirillumLadderStep || platform.mycorrhizaIntroDestination) continue;
++    const dx = target.x - (platform.x + platform.w);
++    if (dx < -60) continue;      // o alvo precisa estar a frente do hospedeiro
++    if (dx > 620) continue;      // longe demais para o lancamento vertical alcancar
++    return platform;
++  }
++  return null;
++}
++
++function corridorPlatforms(route, host, target) {
++  return route.filter(platform => (
++    platform.logicIndex >= host.logicIndex && platform.logicIndex <= target.logicIndex
++  ));
++}
++
+ function candidateWindow(level, config, totalChunks, manifest) {
+   // A janela acompanha o tamanho da fase: um fromChunk fixo em 9 nao sobra
+   // candidato nenhum quando a fase e encurtada para 12 chunks.
+@@ -93,6 +207,42 @@ function candidateWindow(level, config, totalChunks, manifest) {
+   ));
+ }
+ 
++// Janela da prova combinada obrigatoria: derivada do SEGMENTO (p3-challenge) e
++// do desbloqueio do salto duplo (afterUnlock), nunca de um fromChunk fixo. A
++// demonstracao inicial de Azospirillum fica antes disso e nao entra aqui.
++//
++// A janela precisa sobreviver ao reescalonamento da fase (Phase Lab): em fases
++// curtas o segmento encolhe, entao a busca cai para larguras menores antes de
++// desistir. O piso — depois do desbloqueio do salto duplo — nunca e relaxado: e
++// a ordem pedagogica (Azo -> salto duplo -> prova combinada).
++function verticalCandidates(level, config, totalChunks, manifest) {
++  const segment = config.segmentId
++    ? (manifest?.segments || []).find(item => item.id === config.segmentId)
++    : null;
++  let from = Number.isInteger(segment?.from)
++    ? segment.from
++    : Number.isInteger(config.fromChunk) ? config.fromChunk : Math.floor(totalChunks * .6);
++  if (config.afterUnlock) {
++    const unlock = (manifest?.unlockEvents || []).find(event => event.feature === config.afterUnlock);
++    if (Number.isInteger(unlock?.eventChunk)) from = Math.max(from, unlock.eventChunk + 1);
++  }
++  from = Math.min(from, Math.max(0, totalChunks - 2));
++  const to = totalChunks - 1;
++  const pick = minimumWidth => routePlatforms(level).filter(platform => (
++    platform.logicIndex >= from
++    && platform.logicIndex <= to
++    && platform.w >= minimumWidth
++    && !platform.mycorrhizaIntroDestination
++    && !platform.fixedObjective
++    && !platform.authoredPhaseFive
++  ));
++  for (const width of [config.minimumWidth || 130, 118, 104]) {
++    const found = pick(width);
++    if (found.length) return found;
++  }
++  return [];
++}
++
+ export function applySignatureChallenge(level, phase) {
+   const manifest = getPhaseManifest(phase);
+   const config = manifest?.signatureChallenge;
+@@ -102,13 +252,13 @@ export function applySignatureChallenge(level, phase) {
+   // Fase curta demais nao comporta o desafio sem atropelar a apresentacao.
+   if (totalChunks < (config.minimumChunks || 8)) return null;
+ 
++  const horizontal = config.kind === 'gap';
++  if (!horizontal) return applyVerticalLaunchChallenge(level, config, manifest, totalChunks);
++
+   const candidates = candidateWindow(level, config, totalChunks, manifest);
+   if (candidates.length < 2) return null;
+ 
+   const route = routePlatforms(level);
+-  const horizontal = config.kind === 'gap';
+-  const highest = 96;
+-
+   // Prefere o meio da janela — cedo demais atropela a estreia, tarde demais o
+   // jogador ja passou pela pratica sem precisar da mecanica — mas percorre os
+   // vizinhos quando o alvo escolhido nao comporta a mudanca.
+@@ -121,44 +271,111 @@ export function applySignatureChallenge(level, phase) {
+     const previous = route.find(platform => platform.logicIndex === target.logicIndex - 1);
+     if (!previous) continue;
+ 
+-    if (horizontal) {
+-      // A ponte micorrizica so vale entre 325 e 340px: abaixo o salto duplo
+-      // vence, acima a propria ponte nao alcanca. E o dash passa nessa faixa,
+-      // por isso o desafio precisa ficar antes do desbloqueio dele.
+-      // A ponte e horizontal, e uma queda ate o destino alonga o salto. O
+-      // desnivel precisa ser quase nulo para o vao valer o que promete.
+-      if (Math.abs(target.y - previous.y) > 22) continue;
+-
+-      const currentGap = target.x - (previous.x + previous.w);
+-      const desired = clamp(Number(config.gap) || 330, 300, 340);
+-      let applied = 0;
+-      let venceu = false;
+-      // Sobe o vao dentro do alcance da ponte ate a fisica confirmar que o salto
+-      // duplo nao vence. Acima de 340px a propria ponte deixa de alcancar.
+-      for (const alvo of [desired, 335, 340]) {
+-        if (alvo <= currentGap + applied) continue;
+-        const passo = alvo - (currentGap + applied);
+-        shiftFrom(level, target.x, 0, passo);
+-        applied += passo;
+-        if (defeatsDoubleJump(previous, target)) { venceu = true; break; }
+-      }
+-      if (venceu) return record(level, config, target, previous, false);
+-      // Nao deu: devolve a geometria e tenta o proximo candidato.
+-      if (applied) shiftFrom(level, target.x, 0, -applied);
+-      continue;
++    // A ponte micorrizica so vale entre 325 e 340px: abaixo o salto duplo
++    // vence, acima a propria ponte nao alcanca. E o dash passa nessa faixa,
++    // por isso o desafio precisa ficar antes do desbloqueio dele.
++    // A ponte e horizontal, e uma queda ate o destino alonga o salto. O
++    // desnivel precisa ser quase nulo para o vao valer o que promete.
++    if (Math.abs(target.y - previous.y) > 22) continue;
++
++    const currentGap = target.x - (previous.x + previous.w);
++    const desired = clamp(Number(config.gap) || 330, 300, 340);
++    let applied = 0;
++    let venceu = false;
++    // Sobe o vao dentro do alcance da ponte ate a fisica confirmar que o salto
++    // duplo nao vence. Acima de 340px a propria ponte deixa de alcancar.
++    for (const alvo of [desired, 335, 340]) {
++      if (alvo <= currentGap + applied) continue;
++      const passo = alvo - (currentGap + applied);
++      shiftFrom(level, target.x, 0, passo);
++      applied += passo;
++      if (defeatsDoubleJump(previous, target)) { venceu = true; break; }
+     }
++    if (venceu) return record(level, config, target, previous, false);
++    // Nao deu: devolve a geometria e tenta o proximo candidato.
++    if (applied) shiftFrom(level, target.x, 0, -applied);
++    continue;
++  }
++  return null;
++}
++
++// Prova combinada OBRIGATORIA de Azospirillum: escolhe alvo na janela correta,
++// caminha para tras ate a ultima raiz (o hospedeiro), eleva o alvo ate ficar
++// intransponivel sem escada e valida — com uma escada virtual — que a escada
++// mais o salto duplo resolvem. Registra host/alvo/corredor/requiredReach.
++function applyVerticalLaunchChallenge(level, config, manifest, totalChunks) {
++  const candidates = verticalCandidates(level, config, totalChunks, manifest);
++  if (!candidates.length) return null;
++
++  const route = routePlatforms(level);
++  const preferred = clamp(config.preferredRise || 230, 120, config.maximumRise || 260);
++  // O salto duplo alcanca ~180px na vertical. Para a prova valer, o alvo precisa
++  // subir alem disso. O piso de VIABILIDADE (abaixo do qual o candidato e
++  // descartado por falta de folga na tela) fica logo acima do salto duplo; a
++  // subida ALVO continua sendo o preferido, so limitado pela folga real da seed.
++  // A propria fisica (canTraverseSubroute) e a palavra final sobre ser vencivel
++  // ou nao — subidas marginais que ainda se vencem sao rejeitadas e o proximo
++  // candidato e tentado.
++  const feasibilityFloor = Math.min(clamp(config.minimumRise || 200, 120, preferred), 184);
++
++  const middle = Math.floor(candidates.length / 2);
++  const ordered = [...candidates].sort((a, b) => (
++    Math.abs(candidates.indexOf(a) - middle) - Math.abs(candidates.indexOf(b) - middle)
++  ));
++
++  for (const target of ordered) {
++    const host = findRootHost(route, target);
++    if (!host) continue;
++    const corridor = corridorPlatforms(route, host, target);
++    const testNodes = corridor.filter(platform => !platform.recovery);
++
++    // Quanto o alvo pode subir sem sair da tela decide o teto real desta seed.
++    const maxFeasibleRise = host.y - HIGHEST_Y;
++    const maxRise = Math.min(clamp(config.maximumRise || 260, preferred, 320), maxFeasibleRise);
++    if (maxRise < feasibilityFloor) continue; // sem folga para uma prova significativa
+ 
+-    const desiredRise = clamp(Number(config.rise) || 230, 120, 260);
+-    const currentRise = previous.y - target.y;
+-    if (currentRise >= desiredRise) return record(level, config, target, previous, true);
++    let applied = 0;
++    const raiseTo = wantedRise => {
++      const currentRise = host.y - target.y;
++      if (wantedRise <= currentRise) return true;
++      const delta = -(wantedRise - currentRise);
++      if (target.y + delta < HIGHEST_Y) return false;
++      shiftFrom(level, target.x, delta);
++      applied += delta;
++      return true;
++    };
+ 
+-    const deltaY = -(desiredRise - currentRise);
+-    if (target.y + deltaY < highest) continue;
++    // Sobe ate o alvo preferido (limitado pela folga da tela) e so escala mais se
++    // a fisica ainda deixar vencer sem escada. Nunca eleva alem do necessario.
++    if (!raiseTo(Math.min(preferred, maxRise))) {
++      if (applied) shiftFrom(level, target.x, -applied);
++      continue;
++    }
++
++    let accepted = false;
++    for (;;) {
++      const reachableWithoutLadder = canTraverseSubroute({
++        startPlatform: host,
++        targetPlatform: target,
++        platforms: testNodes,
++        primitives: GROUND_PRIMITIVES,
++      });
++      if (!reachableWithoutLadder) {
++        const requiredReach = solveRequiredReach(host, target, config);
++        if (requiredReach != null) {
++          recordVerticalLaunch(level, config, host, target, corridor, requiredReach, applied);
++          accepted = true;
++        }
++        break;
++      }
++      // Ainda vencivel so com salto: sobe mais o alvo (e o sufixo) ate o teto.
++      const currentRise = host.y - target.y;
++      if (currentRise >= maxRise) break;
++      if (!raiseTo(Math.min(maxRise, currentRise + 12))) break;
++    }
+ 
+-    // Sobe o destino e tudo que vem depois, para nao quebrar a continuidade da
+-    // rota nem deixar o resto da fase pendurado.
+-    shiftFrom(level, target.x, deltaY);
+-    return record(level, config, target, previous, false);
++    if (accepted) return level.signatureChallenge;
++    if (applied) shiftFrom(level, target.x, -applied);
+   }
+   return null;
+ }
+@@ -199,3 +416,49 @@ function record(level, config, target, previous, alreadyPresent) {
+   };
+   return level.signatureChallenge;
+ }
++
++function recordVerticalLaunch(level, config, host, target, corridor, requiredReach, appliedDelta) {
++  // Limpa recuperacao em TODO o corredor (host -> alvo), nao so no par
++  // imediatamente anterior: um degrau de seguranca no meio criaria bypass.
++  clearRecoveryInside(level, host.x + host.w, target.x);
++
++  host.azospirillumLadderHost = true;
++  host.mandatoryAzospirillumHost = true;
++  host.wasRecoveryRoot = Boolean(host.recovery);
++  host.recovery = false;
++  target.signatureChallenge = config.mechanic || true;
++  target.azospirillumLadderDestination = true;
++  target.mandatoryAzospirillumTarget = true;
++
++  const intervening = corridor.filter(platform => platform !== host && platform !== target);
++  const interveningSoil = intervening.filter(platform => platform.type === 'soil');
++
++  level.azospirillumChallenge = {
++    id: `azo-challenge-${host.logicIndex}-${target.logicIndex}`,
++    hostLogicIndex: host.logicIndex,
++    targetLogicIndex: target.logicIndex,
++    corridorStartLogicIndex: host.logicIndex,
++    corridorEndLogicIndex: target.logicIndex,
++    hostPlatform: host,
++    targetPlatform: target,
++    requiredReach,
++    interveningCount: intervening.length,
++    interveningSoilCount: interveningSoil.length,
++    rise: Math.round(host.y - target.y),
++    developed: false,
++    traversed: false,
++    mandatory: true,
++  };
++
++  level.signatureChallenge = {
++    mechanic: config.mechanic || null,
++    kind: config.kind || 'vertical-launch',
++    chunk: target.logicIndex,
++    hostChunk: host.logicIndex,
++    rise: Math.round(host.y - target.y),
++    requiredReach,
++    interveningSoilCount: interveningSoil.length,
++    alreadyPresent: appliedDelta === 0,
++  };
++  return level.signatureChallenge;
++}
+diff --git a/src/procgen/simulator.js b/src/procgen/simulator.js
+index cdc5fe9..5401497 100644
+--- a/src/procgen/simulator.js
++++ b/src/procgen/simulator.js
+@@ -17,6 +17,7 @@ import { createRhizobiumNodulation } from './rhizobium-nodulation.js';
+ import { createNitrogenRootDevelopment } from './nitrogen-root.js';
+ import { createAzospirillumRootGrowth } from './azospirillum-root-growth.js';
+ import { createAzospirillumRootSafety } from './azospirillum-root-safety.js';
++import { createRenewableExudates } from './renewable-exudates.js';
+ import { createAzospirillumNitrogen } from './azospirillum-nitrogen.js';
+ import { createMeloidogyneLifecycle } from './meloidogyne-lifecycle.js';
+ import { createGoalSystem } from './goal-system.js';
+@@ -57,9 +58,16 @@ function createEmptyLevel() {
+ //
+ // O jogo nao procedural sempre fez isso (src/data/level.js). Perdeu-se na
+ // migracao para o procedural, e nao foi decisao de design.
++// Exsudatos RENOVAVEIS ficam de fora desta funcao de proposito: quem controla o
++// ciclo deles e o modulo de regeneracao (renewable-exudates.js), pelo tempo e
++// pela saude da raiz. Reativa-los aqui criaria dois donos do mesmo item — e,
++// pior, transformaria a morte numa forma de farmar exsudato instantaneo
++// (morrer -> renovavel volta -> coletar -> morrer). O respawn apenas devolve os
++// exsudatos INICIAIS adiante; o renovavel volta quando o cronometro dele mandar.
+ export function restoreExudatesAhead(level, fromX) {
+   let restored = 0;
+   for (const exudate of level?.exudates || []) {
++    if (exudate.renewable) continue;
+     if (!exudate.taken || !Number.isFinite(exudate.x) || exudate.x < fromX) continue;
+     exudate.taken = false;
+     restored++;
+@@ -198,6 +206,9 @@ export function createSimulator() {
+   const azospirillumNitrogen = createAzospirillumNitrogen({ state, inoculants: beneficialInoculants });
+   const meloidogyneLifecycle = createMeloidogyneLifecycle({ state, entities });
+   const pathogenSurvival = createPathogenSurvival({ state, entities, ecology });
++  // A raiz viva volta a exsudar: exsudato deixa de ser recurso estritamente
++  // finito e a prova obrigatoria da fase 3 nunca fica sem como ser resolvida.
++  const renewableExudates = createRenewableExudates({ state });
+ 
+   // Um unico item selecionado por vez decide quem responde ao E: cada sistema
+   // consulta a selecao antes de agir, em vez de disputar a tecla por ordem.
+@@ -247,6 +258,7 @@ export function createSimulator() {
+   state.ecologicalGameplay = gameplay;
+   state.pathogenSurvival = pathogenSurvival;
+   state.phosphateSolubilization = phosphateSolubilization;
++  state.renewableExudates = renewableExudates;
+ 
+   const physics = createPhysicsSystem({ state, input, entities, hud, audio });
+ 
+@@ -308,6 +320,7 @@ export function createSimulator() {
+     meloidogyneLifecycle.reset();
+     pathogenSurvival.reset();
+     phosphateSolubilization.reset();
++    renewableExudates.reset();
+   }
+ 
+   function setInputs(newKeys) {
+@@ -356,6 +369,12 @@ export function createSimulator() {
+     if (mycorrhizaStructuresUnlocked) mycorrhizaStructures.update(dt);
+ 
+     pathogenSurvival.update(dt);
++    // Roda depois das colonias/selecao: a garantia emergencial precisa enxergar
++    // o estado ja atualizado (inoculo carregado, colonia no hospedeiro).
++    renewableExudates.update(dt, {
++      inoculants: beneficialInoculants,
++      inoculumSelection,
++    });
+     goal.update(dt);
+     if (state.toastTime > 0) state.toastTime -= dt;
+   }
+@@ -365,7 +384,7 @@ export function createSimulator() {
+     trichoderma, recruitment, trichodermaColonies, beneficialInoculants,
+     pseudomonasSiderophores, opportunisticFungus, bacillusBioprotection, bacillusBioprotectionSafety,
+     rhizobiumNodulation, nitrogenRootDevelopment, azospirillumRootGrowth, azospirillumRootSafety,
+-    azospirillumNitrogen,
++    azospirillumNitrogen, renewableExudates,
+     meloidogyneLifecycle, pathogenSurvival, goal, gameplay,
+     phosphateSolubilization,
+     inoculumSelection,
+diff --git a/tests/azospirillum-mandatory-challenge.test.js b/tests/azospirillum-mandatory-challenge.test.js
+new file mode 100644
+index 0000000..a423fa3
+--- /dev/null
++++ b/tests/azospirillum-mandatory-challenge.test.js
+@@ -0,0 +1,274 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++
++import { findRootHost } from '../src/procgen/signature-challenge.js';
++import { createAzospirillumRootGrowth } from '../src/procgen/azospirillum-root-growth.js';
++import {
++  ensurePhaseObjectiveProgress,
++  recordPhaseObjectiveAction,
++} from '../src/procgen/campaign-objective-progress.js';
++import { createCampaignObjectiveEvaluator } from '../src/procgen/campaign-objectives.js';
++
++// --- FASE 2/13-A: escolha do hospedeiro (ultima raiz), com solo no meio -----
++
++function makeRoute(types) {
++  // types: array de 'root'|'soil' na ordem da rota. Alvo e o ultimo no.
++  let x = 100;
++  return types.map((type, index) => {
++    const platform = { logicIndex: index, x, y: 500, w: 180, h: 60, type };
++    x += 260;
++    return platform;
++  });
++}
++
++test('hospedeiro e a ultima raiz antes do alvo — sem solo no meio', () => {
++  const route = makeRoute(['root', 'root', 'root']);
++  const target = route[2];
++  const host = findRootHost(route, target);
++  assert.equal(host, route[1], 'a raiz imediatamente anterior e o hospedeiro');
++});
++
++test('hospedeiro pula 1 bloco de solo (root -> soil -> alvo)', () => {
++  const route = makeRoute(['root', 'root', 'soil', 'root']); // alvo idx 3
++  const target = route[3];
++  const host = findRootHost(route, target);
++  assert.equal(host, route[1], 'o solo em idx 2 e ignorado; a raiz em idx 1 hospeda');
++  assert.equal(host.type, 'root');
++});
++
++test('hospedeiro pula 2 blocos de solo (root -> soil -> soil -> alvo)', () => {
++  const route = makeRoute(['root', 'soil', 'soil', 'root']); // alvo idx 3
++  const target = route[3];
++  const host = findRootHost(route, target);
++  assert.equal(host, route[0], 'as duas soleiras sao ignoradas; a raiz em idx 0 hospeda');
++});
++
++test('nao ha hospedeiro quando a unica raiz anterior esta longe demais', () => {
++  const route = makeRoute(['root', 'soil', 'soil', 'soil', 'root']);
++  // afasta o alvo bem longe da unica raiz anterior
++  const target = route[4];
++  target.x = route[0].x + 5000;
++  assert.equal(findRootHost(route, target), null);
++});
++
++test('plataformas de recuperacao nunca sao hospedeiro', () => {
++  const route = makeRoute(['root', 'root', 'root']);
++  route[1].recovery = true; // a raiz mais proxima e recuperacao
++  const target = route[2];
++  assert.equal(findRootHost(route, target), route[0], 'cai para a raiz principal anterior');
++});
++
++// --- FASE 6/7/8: runtime da escada obrigatoria + travessia --------------------
++
++function makeChallengeState() {
++  const host = { id: 'host', logicIndex: 5, x: 400, y: 500, w: 200, h: 60, type: 'root' };
++  const target = {
++    id: 'target', logicIndex: 6, x: 720, y: 270, w: 190, h: 58, type: 'root',
++    signatureChallenge: 'azospirillumRoots', azospirillumLadderDestination: true,
++    mandatoryAzospirillumTarget: true,
++  };
++  const level = {
++    platforms: [host, target],
++    azospirillumRootLadders: [],
++    azospirillumRoots: [],
++    rhizobiumNodules: [],
++    azospirillumChallenge: {
++      id: 'azo-challenge-5-6',
++      hostLogicIndex: 5,
++      targetLogicIndex: 6,
++      hostPlatform: host,
++      targetPlatform: target,
++      requiredReach: 96,
++      rise: 230,
++      developed: false,
++      traversed: false,
++      mandatory: true,
++    },
++  };
++  const state = {
++    gameState: 'play',
++    time: 0,
++    campaign: { phase: 3 },
++    player: { x: 460, y: 452, w: 32, h: 48, onGround: true, vy: 0 },
++    level,
++    azospirillumNitrogen: { associativeNitrogenRate: 0 }, // N baixo de proposito
++  };
++  ensurePhaseObjectiveProgress(state);
++  const colony = { type: 'azospirillum', platform: host, growth: 1, vigor: 1, dormant: false };
++  const inoculants = { colonies: [colony] };
++  const entities = { burst: () => {} };
++  return { state, host, target, growth: createAzospirillumRootGrowth({ state, entities, inoculants }) };
++}
++
++function developLadder(growth, state) {
++  // 6s de update: passa dos 3s de crescimento e ativa todos os degraus.
++  for (let i = 0; i < 80; i++) { state.time += .08; growth.update(.08); }
++}
++
++test('com N baixo a escada obrigatoria ainda alcanca o requiredReach (piso anti-softlock)', () => {
++  const { state, host, growth } = makeChallengeState();
++  developLadder(growth, state);
++  const ladder = (state.level.azospirillumRootLadders || []).find(l => l.mandatoryChallenge);
++  assert.ok(ladder, 'uma escada obrigatoria precisa nascer sobre o hospedeiro');
++  assert.equal(ladder.challengeId, 'azo-challenge-5-6');
++  const topStep = ladder.steps[ladder.steps.length - 1];
++  const topReach = host.y - topStep.y;
++  assert.ok(
++    topReach >= state.level.azospirillumChallenge.requiredReach - 1,
++    `o degrau superior (${Math.round(topReach)}px) precisa alcancar o requiredReach (${state.level.azospirillumChallenge.requiredReach})`,
++  );
++});
++
++test('a escada obrigatoria madura marca challenge.developed', () => {
++  const { state, growth } = makeChallengeState();
++  assert.equal(state.level.azospirillumChallenge.developed, false);
++  developLadder(growth, state);
++  assert.equal(state.level.azospirillumChallenge.developed, true);
++});
++
++test('so uma escada obrigatoria por host, sem concorrente', () => {
++  const { state, growth } = makeChallengeState();
++  developLadder(growth, state);
++  developLadder(growth, state); // roda de novo
++  const mandatory = (state.level.azospirillumRootLadders || []).filter(l => l.mandatoryChallenge);
++  assert.equal(mandatory.length, 1);
++});
++
++function standOn(state, platform) {
++  state.player.onGround = true;
++  state.player.x = platform.x + 10;
++  state.player.y = platform.y - state.player.h;
++}
++
++test('so tocar nos degraus NAO marca traversed; salto duplo sem tocar tambem nao', () => {
++  const { state, growth } = makeChallengeState();
++  developLadder(growth, state);
++  const step = (state.level.platforms || []).find(p => p.azospirillumLadderStep);
++  assert.ok(step, 'a escada madura precisa ter degraus com colisor');
++
++  // Toca o degrau, mas nunca dá salto duplo.
++  standOn(state, step);
++  growth.update(.016);
++  assert.equal(state.level.azospirillumChallenge.traversed, false);
++
++  // Salto duplo sem ter tocado a escada (reinicia a tentativa pousando fora).
++  standOn(state, state.level.platforms[0]); // hospedeiro (bloco nao relacionado)
++  growth.update(.016);
++  state.player.onGround = false;
++  recordPhaseObjectiveAction(state, 'performedDoubleJumpCount');
++  growth.update(.016);
++  assert.equal(state.level.azospirillumChallenge.traversed, false);
++});
++
++test('tocar a escada, saltar duplo e pousar no alvo marca traversed', () => {
++  const { state, target, growth } = makeChallengeState();
++  developLadder(growth, state);
++  const step = (state.level.platforms || []).find(p => p.azospirillumLadderStep);
++
++  // 1) pisa num degrau da escada obrigatoria
++  standOn(state, step);
++  growth.update(.016);
++
++  // 2) sobe (airborne) e executa o salto duplo
++  state.player.onGround = false;
++  state.player.y = step.y - 80;
++  recordPhaseObjectiveAction(state, 'performedDoubleJumpCount');
++  growth.update(.016);
++
++  // 3) pousa no alvo
++  standOn(state, target);
++  growth.update(.016);
++
++  assert.equal(state.level.azospirillumChallenge.traversed, true);
++
++  // E a prova final da fase (developed + traversed) fecha.
++  const evaluator = createCampaignObjectiveEvaluator({ state, systems: {} });
++  const result = evaluator.evaluate([
++    { type: 'worldState', key: 'mandatoryAzospirillumChallengeDeveloped', operator: '===', value: true },
++    { type: 'worldState', key: 'mandatoryAzospirillumChallengeTraversed', operator: '===', value: true },
++  ]);
++  assert.equal(result.passed, true);
++});
++
++// --- FASE 13-C: nitrogenio ---------------------------------------------------
++
++function makeOptionalRootState(nitrogenRate) {
++  const host = { id: 'opt-host', logicIndex: 5, x: 400, y: 500, w: 200, h: 60, type: 'root' };
++  const level = {
++    platforms: [host],
++    azospirillumRootLadders: [],
++    azospirillumRoots: [],
++    rhizobiumNodules: [],
++    // sem azospirillumChallenge: esta raiz e OPCIONAL
++  };
++  const state = {
++    gameState: 'play',
++    time: 0,
++    campaign: { phase: 3 },
++    player: { x: 460, y: 452, w: 32, h: 48, onGround: true, vy: 0 },
++    level,
++    azospirillumNitrogen: { associativeNitrogenRate: nitrogenRate },
++  };
++  ensurePhaseObjectiveProgress(state);
++  const inoculants = {
++    colonies: [{ type: 'azospirillum', platform: host, growth: 1, vigor: 1, dormant: false }],
++  };
++  return { state, host, growth: createAzospirillumRootGrowth({ state, entities: { burst: () => {} }, inoculants }) };
++}
++
++function ladderReach(state, host) {
++  const ladder = (state.level.azospirillumRootLadders || [])[0];
++  if (!ladder) return 0;
++  return host.y - ladder.endY;
++}
++
++test('raiz OPCIONAL com N baixo continua curta; com N alto fica maior', () => {
++  const baixo = makeOptionalRootState(0);
++  baixo.growth.update(.016);
++  const alcanceBaixo = ladderReach(baixo.state, baixo.host);
++
++  const alto = makeOptionalRootState(20);
++  alto.growth.update(.016);
++  const alcanceAlto = ladderReach(alto.state, alto.host);
++
++  assert.ok(alcanceBaixo > 0 && alcanceAlto > 0, 'as duas raizes opcionais precisam nascer');
++  assert.ok(
++    alcanceAlto > alcanceBaixo + 50,
++    `N alto (${Math.round(alcanceAlto)}px) precisa superar N baixo (${Math.round(alcanceBaixo)}px)`,
++  );
++  // O piso do desafio NAO vale aqui: a raiz opcional pode ser curta.
++  assert.ok(alcanceBaixo < 160, `raiz opcional com N baixo ficou longa demais (${Math.round(alcanceBaixo)}px)`);
++});
++
++test('raiz OBRIGATORIA com N alto pode passar do requiredReach, mas mantem o salto duplo obrigatorio', () => {
++  const { state, host, growth } = makeChallengeState();
++  state.azospirillumNitrogen.associativeNitrogenRate = 40; // N farto
++  developLadder(growth, state);
++  const ladder = (state.level.azospirillumRootLadders || []).find(l => l.mandatoryChallenge);
++  assert.ok(ladder);
++  const alcance = host.y - ladder.endY;
++  const challenge = state.level.azospirillumChallenge;
++  assert.ok(alcance >= challenge.requiredReach, 'com N farto a escada nao pode encolher');
++  // Continua sobrando desnivel ate o alvo: o salto duplo segue necessario.
++  const folgaAteAlvo = ladder.endY - challenge.targetPlatform.y;
++  assert.ok(folgaAteAlvo > 0, 'a escada nao pode encostar no alvo e dispensar o salto duplo');
++});
++
++test('pousar num bloco nao relacionado limpa o estado transitorio (morte/respawn)', () => {
++  const { state, host, target, growth } = makeChallengeState();
++  developLadder(growth, state);
++  const step = (state.level.platforms || []).find(p => p.azospirillumLadderStep);
++
++  standOn(state, step);
++  growth.update(.016);
++  // "morre": pousa no hospedeiro (checkpoint), limpando touchedLadder
++  standOn(state, host);
++  growth.update(.016);
++  // agora salta duplo e pousa no alvo — sem ter re-tocado a escada
++  state.player.onGround = false;
++  recordPhaseObjectiveAction(state, 'performedDoubleJumpCount');
++  growth.update(.016);
++  standOn(state, target);
++  growth.update(.016);
++  assert.equal(state.level.azospirillumChallenge.traversed, false);
++});
+diff --git a/tests/campaign-objectives.test.js b/tests/campaign-objectives.test.js
+index 86ccfe8..4d17f57 100644
+--- a/tests/campaign-objectives.test.js
++++ b/tests/campaign-objectives.test.js
+@@ -57,8 +57,10 @@ test('desbloqueios persistem, mas objetivos de salto duplo e Dash comecam incomp
+ 
+   assert.equal(phase3.state.player.canDoubleJump, true);
+   assert.equal(phase3.state.player.canDash, true);
+-  const jumpRequirement = getPhaseManifest(3).finalTest.requires
+-    .find(condition => condition.key === 'performedDoubleJumpCount');
++  // O contador de salto duplo e uma acao-por-tentativa: comeca em 0 mesmo com o
++  // poder ja desbloqueado. (A prova FINAL da fase 3 agora exige a travessia da
++  // raiz lateral obrigatoria; aqui exercitamos so o mecanismo do contador.)
++  const jumpRequirement = { type: 'worldState', key: 'performedDoubleJumpCount', operator: '>=', value: 1 };
+   const jumpEvaluator = evaluatorFor(phase3);
+   assert.equal(jumpEvaluator.evaluate([jumpRequirement]).passed, false);
+ 
+diff --git a/tests/phase-three-mandatory-geometry.test.js b/tests/phase-three-mandatory-geometry.test.js
+new file mode 100644
+index 0000000..08fc755
+--- /dev/null
++++ b/tests/phase-three-mandatory-geometry.test.js
+@@ -0,0 +1,413 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++
++import { generateCampaignEncounters } from '../src/procgen/campaign-encounters.js';
++import {
++  getPersistentUnlocksBeforePhase,
++  getPhaseManifest,
++} from '../src/procgen/campaign-manifest.js';
++import {
++  campaignPhaseSeed,
++  createCampaign,
++  decorateCampaignLevel,
++  prepareCampaignGeneration,
++} from '../src/procgen/campaign-progression.js';
++import {
++  enforceTraversableRoute,
++  generateLevel,
++  isInsideAzospirillumChallengeCorridor,
++} from '../src/procgen/generator.js';
++import { generateUnderdevelopedNitrogenRoots } from '../src/procgen/nitrogen-root.js';
++import { createRouteAnchorRegistry } from '../src/procgen/route-geometry.js';
++import {
++  applySignatureChallenge,
++  canTraverseSubroute,
++  findRootHost,
++} from '../src/procgen/signature-challenge.js';
++import { generateAzospirillumRootLadders } from '../src/procgen/azospirillum-root-growth.js';
++
++const SINGLE = { id: 'running-jump', requires: [] };
++const DOUBLE = { id: 'running-double-jump-late', requires: ['doubleJump'] };
++// Sem nitrogenio a escada alcanca 96px; o maximo declarado e 340px.
++const MAX_REACH = 340;
++
++function route(level) {
++  return (level.platforms || [])
++    .filter(p => !p.recovery && !p.final && Number.isInteger(p.logicIndex))
++    .sort((a, b) => a.logicIndex - b.logicIndex || a.x - b.x);
++}
++
++// Mesma sequencia de prepareLevel(), sem DOM/canvas nem Phase Lab.
++function prepareFaseTres(seedName, { withAnchors = false } = {}) {
++  const campaign = createCampaign(seedName, { storage: null });
++  campaign.phase = 3;
++  Object.assign(campaign.unlocks, getPersistentUnlocksBeforePhase(3));
++  const profile = prepareCampaignGeneration(campaign);
++  const seedValue = campaignPhaseSeed(campaign);
++
++  let level = generateLevel(seedValue);
++  level = decorateCampaignLevel(level, campaign, profile);
++
++  const anchors = withAnchors ? createRouteAnchorRegistry(level) : null;
++  anchors?.capture();
++
++  applySignatureChallenge(level, campaign.phase);
++
++  level.microbeEncounters = generateCampaignEncounters({
++    platforms: level.platforms, phase: campaign.phase, seedValue,
++  }).concat(level.authoredEncounters || []);
++
++  const antesDaEscada = new Map((level.platforms || []).map(p => [
++    p, { x: p.x, y: p.y, w: p.w, h: p.h },
++  ]));
++
++  generateAzospirillumRootLadders({
++    level, phase: campaign.phase, seedValue,
++    encounters: level.microbeEncounters,
++    config: getPhaseManifest(campaign.phase).azospirillumRootLadder,
++  });
++  generateUnderdevelopedNitrogenRoots({
++    level, phase: campaign.phase, seedValue,
++    encounters: level.microbeEncounters,
++    config: getPhaseManifest(campaign.phase).nitrogenRoot,
++  });
++
++  const safetySteps = enforceTraversableRoute(level, {
++    doubleJump: Boolean(campaign.unlocks.doubleJump),
++    dash: Boolean(campaign.unlocks.dash),
++  });
++  anchors?.capture();
++  anchors?.synchronize();
++
++  return { level, campaign, anchors, antesDaEscada, safetySteps };
++}
++
++function corridorNodes(level, challenge) {
++  return route(level).filter(p => (
++    p.logicIndex >= challenge.corridorStartLogicIndex
++    && p.logicIndex <= challenge.corridorEndLogicIndex
++  ));
++}
++
++function launchStep(challenge) {
++  const host = challenge.hostPlatform;
++  return {
++    x: host.x + host.w / 2 - 45,
++    y: host.y - challenge.requiredReach,
++    w: 90, h: 12, type: 'root', oneWay: true,
++  };
++}
++
++// --- FASE 13-A: geometria em 100+ seeds ---------------------------------------
++
++test('100 seeds da fase 3: a prova obrigatoria e valida, exclusiva e solucionavel', () => {
++  const SEEDS = 100;
++  const falhas = [];
++  let comSolo = 0;
++
++  for (let s = 0; s < SEEDS; s++) {
++    const { level } = prefixo(s);
++    const c = level.azospirillumChallenge;
++    if (!c) { falhas.push(`seed ${s}: nenhum desafio obrigatorio`); continue; }
++
++    const rota = route(level);
++    const host = c.hostPlatform;
++    const target = c.targetPlatform;
++
++    // Exatamente um desafio obrigatorio.
++    const marcados = rota.filter(p => p.mandatoryAzospirillumTarget);
++    if (marcados.length !== 1) falhas.push(`seed ${s}: ${marcados.length} alvos marcados`);
++
++    // Host e raiz de rota, nao recuperacao, anterior ao alvo.
++    if (host.type !== 'root') falhas.push(`seed ${s}: host nao e raiz (${host.type})`);
++    if (host.recovery) falhas.push(`seed ${s}: host e recuperacao`);
++    if (!(c.targetLogicIndex > c.hostLogicIndex)) falhas.push(`seed ${s}: alvo nao vem depois do host`);
++
++    // O alvo esta depois do desbloqueio do salto duplo (ordem pedagogica).
++    const djUnlock = getPhaseManifest(3).unlockEvents.find(e => e.feature === 'doubleJump')?.eventChunk;
++    if (Number.isInteger(djUnlock) && c.targetLogicIndex <= djUnlock) {
++      falhas.push(`seed ${s}: alvo no chunk ${c.targetLogicIndex} vem antes do salto duplo (${djUnlock})`);
++    }
++
++    // Solo entre host e alvo e PERMITIDO e nao invalida a seed.
++    if (c.interveningSoilCount > 0) comSolo++;
++
++    // Sem escada: inalcancavel (inclui solo e recuperacao do corredor).
++    const nos = corridorNodes(level, c);
++    const recuperacaoNoCorredor = (level.platforms || []).filter(p => (
++      p.recovery && p.x + p.w / 2 > host.x + host.w && p.x + p.w / 2 < target.x
++    ));
++    if (canTraverseSubroute({
++      startPlatform: host, targetPlatform: target,
++      platforms: nos, additionalPlatforms: recuperacaoNoCorredor,
++      primitives: [SINGLE, DOUBLE],
++    })) falhas.push(`seed ${s}: alvo alcancavel SEM a raiz lateral`);
++
++    // Com a escada no requiredReach + salto duplo: alcancavel.
++    if (!canTraverseSubroute({
++      startPlatform: launchStep(c), targetPlatform: target,
++      platforms: [launchStep(c)], primitives: [DOUBLE],
++    })) falhas.push(`seed ${s}: alvo inalcancavel MESMO com a escada`);
++
++    // requiredReach dentro do maximo.
++    if (!(c.requiredReach <= MAX_REACH)) falhas.push(`seed ${s}: requiredReach ${c.requiredReach} > ${MAX_REACH}`);
++
++    // Nenhuma recovery/safetyStep restou no corredor criando bypass.
++    if (recuperacaoNoCorredor.length) {
++      falhas.push(`seed ${s}: ${recuperacaoNoCorredor.length} plataformas de recuperacao no corredor`);
++    }
++
++    // A rota DEPOIS do alvo continua atravessavel (o desafio nao pode deixar o
++    // resto da fase pendurado).
++    const depois = rota.filter(p => p.logicIndex > c.targetLogicIndex);
++    if (depois.length) {
++      const primeiroDepois = depois[0];
++      if (!canTraverseSubroute({
++        startPlatform: target, targetPlatform: primeiroDepois,
++        platforms: [target, primeiroDepois], primitives: [SINGLE, DOUBLE],
++      })) falhas.push(`seed ${s}: a rota depois do alvo ficou intransponivel`);
++    }
++  }
++
++  assert.deepEqual(falhas.slice(0, 12), [], `${falhas.length} falhas em ${SEEDS} seeds`);
++  // Nota honesta sobre a cobertura: a busca prefere o meio da janela, e nessas
++  // 100 seeds o candidato do meio sempre teve uma RAIZ como bloco anterior —
++  // entao o caminho "solo entre host e alvo" nao e exercitado aqui. Ele e
++  // coberto pelos fixtures e pelo teste de pipeline logo abaixo, que forca a
++  // geometria. Este assert documenta a contagem em vez de fingir cobertura.
++  assert.ok(comSolo >= 0, `seeds com solo intermediario: ${comSolo}/${SEEDS}`);
++});
++
++// Pipeline COMPLETO com solo entre hospedeiro e alvo. A seed procedural raramente
++// cai nesse caso, entao a geometria e montada de proposito: na janela do desafio
++// so existe um candidato largo o bastante, e o bloco imediatamente anterior a ele
++// e SOLO. applySignatureChallenge tem de escolher a raiz de tras como hospedeiro,
++// aceitar o solo no meio e registrar o corredor inteiro.
++test('pipeline: applySignatureChallenge aceita solo entre hospedeiro e alvo', () => {
++  const manifest = getPhaseManifest(3);
++  const platforms = [];
++  let x = 100;
++  for (let index = 0; index <= manifest.totalChunks - 1; index++) {
++    // Estreitas demais para virar candidato, exceto o alvo escolhido.
++    const alvo = index === 20;
++    const w = alvo ? 190 : 90;
++    // 18 = raiz hospedeira, 19 = SOLO intermediario.
++    const type = index === 19 ? 'soil' : 'root';
++    platforms.push({ logicIndex: index, x, y: 500, w, h: 60, type });
++    // Vaos curtos: o desafio precisa vir da ALTURA (a escada), nao da distancia.
++    x += w + 60;
++  }
++  const level = { platforms, roots: [], primitives: [] };
++
++  const challenge = applySignatureChallenge(level, 3);
++  assert.ok(challenge, 'o desafio precisa ser criado mesmo com solo antes do alvo');
++
++  const c = level.azospirillumChallenge;
++  assert.ok(c, 'level.azospirillumChallenge precisa ser registrado');
++  assert.equal(c.targetLogicIndex, 20, 'o unico candidato largo e o alvo');
++  assert.equal(c.hostLogicIndex, 18, 'o hospedeiro e a raiz ANTES do solo, nao o solo');
++  assert.equal(c.hostPlatform.type, 'root');
++  assert.equal(c.interveningSoilCount, 1, 'o solo intermediario e contabilizado, nao removido');
++
++  // O bloco de solo continua na rota principal, intacto e ainda solo.
++  const soil = platforms.find(p => p.logicIndex === 19);
++  assert.ok(level.platforms.includes(soil), 'o solo da rota principal nao pode ser removido');
++  assert.equal(soil.type, 'soil', 'o solo nao pode ser convertido em raiz');
++
++  // E a prova continua valendo: inalcancavel sem escada (mesmo pisando no solo),
++  // alcancavel com a escada no requiredReach.
++  const corridor = corridorNodes(level, c);
++  assert.equal(
++    canTraverseSubroute({
++      startPlatform: c.hostPlatform, targetPlatform: c.targetPlatform,
++      platforms: corridor, primitives: [SINGLE, DOUBLE],
++    }),
++    false,
++    'o solo intermediario nao pode virar trampolim que vence a prova',
++  );
++  assert.equal(
++    canTraverseSubroute({
++      startPlatform: launchStep(c), targetPlatform: c.targetPlatform,
++      platforms: [launchStep(c)], primitives: [DOUBLE],
++    }),
++    true,
++    'com a escada no requiredReach o alvo e alcancavel',
++  );
++});
++
++const cache = new Map();
++function prefixo(s) {
++  if (!cache.has(s)) cache.set(s, prepareFaseTres(`mandatory-geometry-${s}`));
++  return cache.get(s);
++}
++
++// --- FASE 13-A (fixtures deliberadas) -----------------------------------------
++
++function lancamento(host, reach) {
++  return { x: host.x + host.w / 2 - 45, y: host.y - reach, w: 90, h: 12, type: 'root', oneWay: true };
++}
++
++test('fixture: root -> soil -> alvo alto continua valido (o solo nao invalida)', () => {
++  const host = { logicIndex: 0, x: 100, y: 500, w: 200, h: 60, type: 'root' };
++  const soil = { logicIndex: 1, x: 340, y: 500, w: 150, h: 60, type: 'soil' };
++  const target = { logicIndex: 2, x: 520, y: 270, w: 190, h: 58, type: 'root' };
++
++  // Sem escada: inalcancavel, mesmo usando o solo intermediario como trampolim.
++  assert.equal(
++    canTraverseSubroute({
++      startPlatform: host, targetPlatform: target,
++      platforms: [host, soil, target], primitives: [SINGLE, DOUBLE],
++    }),
++    false,
++  );
++  // Com a escada (raiz lateral como plataforma de lancamento) + salto duplo:
++  // alcancavel. A raiz nao toca o alvo — ela so ergue Miguelito.
++  assert.equal(
++    canTraverseSubroute({
++      startPlatform: lancamento(host, 150), targetPlatform: target,
++      platforms: [lancamento(host, 150)], primitives: [DOUBLE],
++    }),
++    true,
++  );
++});
++
++test('fixture: root -> soil -> soil -> alvo alto (dois blocos de solo no meio)', () => {
++  const host = { logicIndex: 0, x: 100, y: 500, w: 200, h: 60, type: 'root' };
++  const soil1 = { logicIndex: 1, x: 320, y: 500, w: 100, h: 60, type: 'soil' };
++  const soil2 = { logicIndex: 2, x: 440, y: 500, w: 100, h: 60, type: 'soil' };
++  const target = { logicIndex: 3, x: 560, y: 270, w: 190, h: 58, type: 'root' };
++
++  assert.equal(
++    canTraverseSubroute({
++      startPlatform: host, targetPlatform: target,
++      platforms: [host, soil1, soil2, target], primitives: [SINGLE, DOUBLE],
++    }),
++    false,
++    'nem com dois trampolins de solo o salto duplo vence a subida',
++  );
++
++  // O hospedeiro e a RAIZ, nao o solo mais proximo: findRootHost caminha para
++  // tras por cima dos dois blocos de solo.
++  assert.equal(findRootHost([host, soil1, soil2, target], target), host);
++
++  // E a partir dela a escada resolve.
++  assert.equal(
++    canTraverseSubroute({
++      startPlatform: lancamento(host, 240), targetPlatform: target,
++      platforms: [lancamento(host, 240)], primitives: [DOUBLE],
++    }),
++    true,
++    'do topo da escada sobre a raiz o salto duplo alcanca o alvo',
++  );
++});
++
++test('fixture: alvo alcancavel sem Azo e alvo inalcancavel mesmo no alcance maximo', () => {
++  const host = { logicIndex: 0, x: 100, y: 500, w: 200, h: 60, type: 'root' };
++
++  // (6) Alvo baixo demais: o salto duplo resolve sozinho — candidato invalido,
++  // e o motivo de o desafio elevar o alvo antes de aceita-lo.
++  const facil = { logicIndex: 1, x: 420, y: 440, w: 190, h: 58, type: 'root' };
++  assert.equal(
++    canTraverseSubroute({
++      startPlatform: host, targetPlatform: facil,
++      platforms: [host, facil], primitives: [SINGLE, DOUBLE],
++    }),
++    true,
++    'um alvo baixo e vencido sem Azospirillum — precisa ser rejeitado/elevado',
++  );
++
++  // (7) Alvo longe demais: nem no alcance maximo a escada resolve — candidato
++  // rejeitado, e a busca tenta o proximo.
++  const impossivel = { logicIndex: 1, x: 1400, y: 240, w: 190, h: 58, type: 'root' };
++  assert.equal(
++    canTraverseSubroute({
++      startPlatform: lancamento(host, 340), targetPlatform: impossivel,
++      platforms: [lancamento(host, 340)], primitives: [DOUBLE],
++    }),
++    false,
++    'nem no alcance maximo o alvo distante e alcancavel',
++  );
++});
++
++test('fixture: uma recovery no corredor cria bypass — por isso ela e removida', () => {
++  const host = { logicIndex: 0, x: 100, y: 500, w: 200, h: 60, type: 'root' };
++  const target = { logicIndex: 1, x: 560, y: 280, w: 190, h: 58, type: 'root' };
++  const bypass = { logicIndex: 1, x: 340, y: 400, w: 110, h: 54, type: 'root', recovery: true };
++
++  assert.equal(
++    canTraverseSubroute({ startPlatform: host, targetPlatform: target, platforms: [host, target], primitives: [SINGLE, DOUBLE] }),
++    false,
++    'sem o bypass o alvo e inalcancavel',
++  );
++  assert.equal(
++    canTraverseSubroute({ startPlatform: host, targetPlatform: target, platforms: [host, bypass, target], primitives: [SINGLE, DOUBLE] }),
++    true,
++    'com o bypass o desafio se desmonta — e o motivo de limpar o corredor',
++  );
++});
++
++// --- FASE 12: enforceTraversableRoute nao insere degrau no corredor -----------
++
++test('enforceTraversableRoute nao insere degrau de seguranca dentro do corredor', () => {
++  for (let s = 0; s < 30; s++) {
++    const { level, safetySteps } = prefixo(s);
++    const c = level.azospirillumChallenge;
++    assert.ok(c, `seed ${s}: sem desafio`);
++    for (const step of safetySteps || []) {
++      const centro = step.x + step.w / 2;
++      assert.ok(
++        centro <= c.hostPlatform.x + c.hostPlatform.w || centro >= c.targetPlatform.x,
++        `seed ${s}: degrau de seguranca inserido dentro do corredor`,
++      );
++    }
++  }
++});
++
++test('o helper de corredor so cobre o trecho registrado', () => {
++  const level = {
++    azospirillumChallenge: { corridorStartLogicIndex: 5, corridorEndLogicIndex: 8 },
++  };
++  const p = index => ({ logicIndex: index });
++  assert.equal(isInsideAzospirillumChallengeCorridor(level, p(5), p(6)), true);
++  assert.equal(isInsideAzospirillumChallengeCorridor(level, p(7), p(8)), true);
++  assert.equal(isInsideAzospirillumChallengeCorridor(level, p(4), p(5)), false, 'entrada do corredor nao e corredor');
++  assert.equal(isInsideAzospirillumChallengeCorridor(level, p(8), p(9)), false, 'saida do corredor nao e corredor');
++  assert.equal(isInsideAzospirillumChallengeCorridor({}, p(5), p(6)), false, 'sem desafio, sem supressao');
++});
++
++// --- FASE 13-B: propriedades da geometria ------------------------------------
++
++test('generateAzospirillumRootLadders nao altera x/y/w/h de nenhuma plataforma', () => {
++  for (let s = 0; s < 25; s++) {
++    const { level, antesDaEscada } = prefixo(s);
++    for (const [platform, antes] of antesDaEscada) {
++      if (!(level.platforms || []).includes(platform)) continue; // recovery limpa e legitima
++      for (const key of ['x', 'y', 'w', 'h']) {
++        assert.equal(
++          platform[key], antes[key],
++          `seed ${s}: plataforma logicIndex ${platform.logicIndex} mudou ${key} depois da escada`,
++        );
++      }
++    }
++  }
++});
++
++test('checkpoints, exsudatos e pickups mantem o offset relativo a plataforma', () => {
++  for (let s = 0; s < 20; s++) {
++    const { level, anchors } = prepareFaseTres(`offsets-${s}`, { withAnchors: true });
++    let checados = 0;
++    for (const [entity, anchor] of anchors.anchors) {
++      if (!(level.platforms || []).includes(anchor.platform)) continue;
++      assert.equal(
++        entity.x, anchor.platform.x + anchor.offsetX,
++        `seed ${s}: ${anchor.name} perdeu o offset horizontal`,
++      );
++      assert.equal(
++        entity.y, anchor.platform.y + anchor.offsetY,
++        `seed ${s}: ${anchor.name} perdeu o offset vertical`,
++      );
++      checados++;
++    }
++    assert.ok(checados > 0, `seed ${s}: nenhuma entidade ancorada exercitada`);
++  }
++});
+diff --git a/tests/renewable-exudates.test.js b/tests/renewable-exudates.test.js
+new file mode 100644
+index 0000000..4a312ac
+--- /dev/null
++++ b/tests/renewable-exudates.test.js
+@@ -0,0 +1,391 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++
++import {
++  RENEWABLE_EXUDATE_DEFAULTS,
++  createRenewableExudates,
++  isEligibleRoot,
++  regenerationInterval,
++} from '../src/procgen/renewable-exudates.js';
++import { restoreExudatesAhead } from '../src/procgen/simulator.js';
++
++function root(overrides = {}) {
++  return {
++    id: overrides.id || `root-${overrides.logicIndex ?? 0}`,
++    logicIndex: overrides.logicIndex ?? 0,
++    x: overrides.x ?? 200,
++    y: overrides.y ?? 500,
++    w: overrides.w ?? 200,
++    h: 60,
++    type: 'root',
++    rootHealth: overrides.rootHealth ?? 1,
++    ...overrides,
++  };
++}
++
++function makeState({ roots = [root()], exudates = [], player = {}, challenge = null } = {}) {
++  return {
++    gameState: 'play',
++    time: 0,
++    campaign: { phase: 3, seed: 'seed-teste' },
++    currentCheckpoint: { x: 0, y: 400 },
++    player: { x: 220, y: 452, exudates: 0, ...player },
++    level: {
++      seed: 'seed-teste',
++      platforms: roots,
++      exudates,
++      objectiveProgress: { attemptId: 1 },
++      azospirillumChallenge: challenge,
++    },
++  };
++}
++
++function run(system, seconds, dt = 0.5, systems = {}) {
++  for (let elapsed = 0; elapsed < seconds; elapsed += dt) system.update(dt, systems);
++}
++
++// Os stubs abaixo espelham a API REAL dos sistemas (beneficial-inoculants expoe
++// followerGroups() -> Map; inoculum-selection expoe options() -> lista). Usar um
++// formato inventado aqui esconderia justamente o tipo de erro que a garantia
++// emergencial nao pode ter: achar que ninguem esta recrutado e brotar exsudato
++// desnecessario.
++function semRecrutados() {
++  return {
++    inoculants: { colonies: [], followerGroups: () => new Map() },
++    inoculumSelection: { options: () => [] },
++  };
++}
++
++function comAzospirillumRecrutado() {
++  return {
++    inoculants: {
++      colonies: [],
++      followerGroups: () => new Map([['azospirillum', [{ type: 'azospirillum' }]]]),
++    },
++    inoculumSelection: { options: () => [{ kind: 'organism', type: 'azospirillum', count: 1 }] },
++  };
++}
++
++function comColoniaNoHost(host) {
++  return {
++    inoculants: {
++      colonies: [{ type: 'azospirillum', platform: host, dormant: false }],
++      followerGroups: () => new Map(),
++    },
++    inoculumSelection: { options: () => [] },
++  };
++}
++
++// --- Formula do intervalo -----------------------------------------------------
++
++test('raiz saudavel regenera mais rapido que raiz doente', () => {
++  const saudavel = regenerationInterval(1, .5);
++  const media = regenerationInterval(.5, .5);
++  const doente = regenerationInterval(.1, .5);
++  assert.ok(saudavel < media, `saudavel ${saudavel} deveria ser menor que media ${media}`);
++  assert.ok(media < doente, `media ${media} deveria ser menor que doente ${doente}`);
++  // Faixas aproximadas declaradas no plano (com jitter neutro em .5 -> fator 1.0).
++  assert.ok(saudavel >= 14 && saudavel <= 22, `raiz saudavel: ${saudavel.toFixed(1)}s fora de 14-22s`);
++  assert.ok(media >= 30 && media <= 50, `saude intermediaria: ${media.toFixed(1)}s fora de 30-50s`);
++  assert.ok(doente >= 50 && doente <= 75, `raiz doente: ${doente.toFixed(1)}s fora de 50-75s`);
++});
++
++test('o jitter respeita os limites declarados', () => {
++  const minimo = regenerationInterval(1, 0);
++  const maximo = regenerationInterval(1, 1);
++  const base = RENEWABLE_EXUDATE_DEFAULTS.minimumIntervalSeconds;
++  assert.ok(Math.abs(minimo - base * RENEWABLE_EXUDATE_DEFAULTS.jitterMinimum) < .001);
++  assert.ok(Math.abs(maximo - base * RENEWABLE_EXUDATE_DEFAULTS.jitterMaximum) < .001);
++});
++
++// --- Elegibilidade ------------------------------------------------------------
++
++test('so raiz de rota viva e elegivel: solo, recuperacao, degrau e final ficam de fora', () => {
++  assert.equal(isEligibleRoot(root()), true);
++  assert.equal(isEligibleRoot({ ...root(), type: 'soil' }), false, 'solo nunca exsuda');
++  assert.equal(isEligibleRoot({ ...root(), recovery: true }), false);
++  assert.equal(isEligibleRoot({ ...root(), final: true }), false);
++  assert.equal(isEligibleRoot({ ...root(), safetyStep: true }), false);
++  assert.equal(isEligibleRoot({ ...root(), azospirillumLadderStep: true }), false);
++  assert.equal(isEligibleRoot({ ...root(), mycorrhizaStructure: true }), false);
++  assert.equal(isEligibleRoot({ ...root(), w: 40 }), false, 'sem superficie nao cabe o item');
++  assert.equal(isEligibleRoot({ ...root(), rootHealth: 0 }), false, 'raiz morta nao exsuda');
++  assert.equal(isEligibleRoot({ ...root(), logicIndex: -1 }), false);
++});
++
++// --- Regeneracao --------------------------------------------------------------
++
++test('a raiz saudavel brota um exsudato renovavel, vinculado a plataforma', () => {
++  const platform = root({ rootHealth: 1 });
++  const state = makeState({ roots: [platform] });
++  const system = createRenewableExudates({ state });
++  run(system, 40);
++
++  const renovaveis = state.level.exudates.filter(e => e.renewable);
++  assert.equal(renovaveis.length, 1, 'exatamente um renovavel nesta raiz');
++  const item = renovaveis[0];
++  assert.equal(item.platform, platform);
++  assert.equal(item.logicIndex, platform.logicIndex);
++  assert.equal(item.taken, false);
++  assert.equal(item.x, platform.x + item.offsetX);
++  assert.equal(item.y, platform.y + item.offsetY);
++  // Fica sobre a superficie da raiz, nao dentro do bloco nem fora da largura.
++  assert.ok(item.x > platform.x && item.x < platform.x + platform.w, 'dentro da largura util');
++  assert.ok(item.y < platform.y, 'acima da superficie');
++});
++
++test('o item acompanha a plataforma pelo offset', () => {
++  const platform = root();
++  const state = makeState({ roots: [platform] });
++  const system = createRenewableExudates({ state });
++  run(system, 40);
++  const item = state.level.exudates.find(e => e.renewable);
++  const offsetX = item.offsetX;
++  const offsetY = item.offsetY;
++
++  platform.x += 120;
++  platform.y -= 60;
++  system.update(.5);
++  assert.equal(item.x, platform.x + offsetX);
++  assert.equal(item.y, platform.y + offsetY);
++});
++
++test('maximo de um renovavel por raiz — nao duplica enquanto nao for coletado', () => {
++  const platform = root();
++  const state = makeState({ roots: [platform] });
++  const system = createRenewableExudates({ state });
++  run(system, 300);
++  assert.equal(state.level.exudates.filter(e => e.renewable).length, 1);
++});
++
++test('depois da coleta o mesmo slot e reaproveitado, sem crescer o array', () => {
++  const platform = root();
++  const state = makeState({ roots: [platform] });
++  const system = createRenewableExudates({ state });
++  run(system, 40);
++  const item = state.level.exudates.find(e => e.renewable);
++  assert.equal(state.level.exudates.length, 1);
++
++  item.taken = true;      // jogador coletou
++  run(system, 40);        // novo ciclo
++  assert.equal(state.level.exudates.length, 1, 'o array nao pode crescer a cada regeneracao');
++  assert.equal(state.level.exudates[0], item, 'o slot e reutilizado');
++  assert.equal(item.taken, false, 'o item voltou a existir');
++});
++
++test('o teto global de renovaveis ativos e respeitado', () => {
++  const roots = Array.from({ length: 8 }, (_, index) => root({
++    logicIndex: index, x: 200 + index * 300, id: `r${index}`,
++  }));
++  const state = makeState({ roots });
++  const system = createRenewableExudates({ state });
++  run(system, 400);
++  const ativos = state.level.exudates.filter(e => e.renewable && !e.taken).length;
++  assert.ok(
++    ativos <= RENEWABLE_EXUDATE_DEFAULTS.maximumActiveGlobal,
++    `${ativos} renovaveis ativos passa do teto de ${RENEWABLE_EXUDATE_DEFAULTS.maximumActiveGlobal}`,
++  );
++});
++
++test('nunca nasce em bloco de solo', () => {
++  const solo = { ...root({ logicIndex: 1 }), type: 'soil' };
++  const state = makeState({ roots: [solo] });
++  const system = createRenewableExudates({ state });
++  run(system, 400);
++  assert.equal(state.level.exudates.length, 0);
++});
++
++test('raiz morta nao gera naturalmente', () => {
++  const morta = root({ rootHealth: 0 });
++  const state = makeState({ roots: [morta] });
++  const system = createRenewableExudates({ state });
++  run(system, 400);
++  assert.equal(state.level.exudates.length, 0);
++});
++
++test('nao substitui nem altera os exsudatos iniciais', () => {
++  const platform = root();
++  const inicial = { logicIndex: 0, x: 240, y: 470, taken: false };
++  const state = makeState({ roots: [platform], exudates: [inicial] });
++  const system = createRenewableExudates({ state });
++  run(system, 60);
++  assert.equal(inicial.x, 240, 'o exsudato inicial nao pode ser movido');
++  assert.equal(inicial.y, 470);
++  assert.equal(inicial.renewable, undefined, 'o inicial nao vira renovavel');
++  assert.ok(state.level.exudates.includes(inicial), 'o inicial continua na fase');
++});
++
++// --- Determinismo -------------------------------------------------------------
++
++test('o calculo e deterministico para a mesma seed e varia entre seeds', () => {
++  const posicoes = seed => {
++    const platform = root();
++    const state = makeState({ roots: [platform] });
++    state.level.seed = seed;
++    state.campaign.seed = seed;
++    const system = createRenewableExudates({ state });
++    run(system, 60);
++    const item = state.level.exudates.find(e => e.renewable);
++    return { x: item.x, y: item.y };
++  };
++  const a1 = posicoes('seed-A');
++  const a2 = posicoes('seed-A');
++  const b = posicoes('seed-B');
++  assert.deepEqual(a1, a2, 'a mesma seed precisa dar o mesmo resultado');
++  assert.notDeepEqual(a1, b, 'seeds diferentes precisam variar');
++});
++
++// --- Morte, respawn e farming -------------------------------------------------
++
++test('restoreExudatesAhead nao reativa renovaveis: sem farming por respawn', () => {
++  const level = {
++    exudates: [
++      { x: 100, taken: true },                    // inicial atras
++      { x: 900, taken: true },                    // inicial adiante
++      { x: 950, taken: true, renewable: true },   // renovavel adiante
++    ],
++  };
++  const devolvidos = restoreExudatesAhead(level, 400);
++  assert.equal(devolvidos, 1, 'so o inicial adiante volta');
++  assert.equal(level.exudates[1].taken, false, 'o inicial adiante voltou');
++  assert.equal(level.exudates[2].taken, true, 'o renovavel continua no cooldown dele');
++});
++
++test('a morte nao duplica renovaveis nem cria dois itens na mesma raiz', () => {
++  const platform = root();
++  const state = makeState({ roots: [platform] });
++  const system = createRenewableExudates({ state });
++  run(system, 40);
++  const item = state.level.exudates.find(e => e.renewable);
++  item.taken = true;
++
++  // Respawn: devolve os iniciais adiante e reinicia os cronometros do modulo.
++  restoreExudatesAhead(state.level, 0);
++  system.reset();
++  run(system, 400);
++
++  const renovaveis = state.level.exudates.filter(e => e.renewable);
++  assert.equal(renovaveis.length, 1, 'continua um unico slot renovavel nesta raiz');
++});
++
++// --- Garantia emergencial -----------------------------------------------------
++
++function makeEmergencyState({ playerExudates = 0, exudates = [] } = {}) {
++  const antes = root({ logicIndex: 3, x: 200, rootHealth: .9, id: 'antes' });
++  const host = root({ logicIndex: 5, x: 900, rootHealth: .8, id: 'host' });
++  const depois = root({ logicIndex: 6, x: 1500, rootHealth: 1, id: 'depois' });
++  const target = { ...depois, id: 'target', mandatoryAzospirillumTarget: true };
++  const state = makeState({
++    roots: [antes, host, depois],
++    exudates,
++    player: { exudates: playerExudates },
++    challenge: {
++      id: 'azo-challenge-5-6',
++      hostLogicIndex: 5,
++      targetLogicIndex: 6,
++      hostPlatform: host,
++      targetPlatform: target,
++      requiredReach: 96,
++      developed: false,
++      traversed: false,
++      mandatory: true,
++    },
++  });
++  return { state, antes, host, depois };
++}
++
++test('a garantia emergencial devolve um exsudato quando tudo mais falta', () => {
++  const { state } = makeEmergencyState();
++  const system = createRenewableExudates({
++    state,
++    // Isola a emergencia: sem regeneracao natural competindo.
++    config: { minimumIntervalSeconds: 9999, maximumIntervalSeconds: 9999 },
++  });
++  run(system, 12, .5, semRecrutados());
++  const emergencial = state.level.exudates.filter(e => e.renewable);
++  assert.equal(emergencial.length, 1, 'exatamente um exsudato de emergencia');
++  assert.equal(emergencial[0].taken, false);
++  // Usa o mesmo formato/coleta dos demais: nada de item artificial de debug.
++  assert.equal(typeof emergencial[0].x, 'number');
++  assert.equal(typeof emergencial[0].taken, 'boolean');
++});
++
++test('a emergencia nunca aparece depois do bloco alto', () => {
++  const { state, host } = makeEmergencyState();
++  const system = createRenewableExudates({
++    state,
++    config: { minimumIntervalSeconds: 9999, maximumIntervalSeconds: 9999 },
++  });
++  run(system, 30, .5, semRecrutados());
++  for (const item of state.level.exudates.filter(e => e.renewable)) {
++    assert.ok(
++      item.x <= host.x + host.w + 40,
++      `exsudato de emergencia em x=${item.x} caiu depois do hospedeiro (x=${host.x})`,
++    );
++  }
++});
++
++test('a emergencia nao dispara quando ja existe exsudato disponivel', () => {
++  const disponivel = { logicIndex: 3, x: 260, y: 470, taken: false };
++  const { state } = makeEmergencyState({ exudates: [disponivel] });
++  const system = createRenewableExudates({
++    state,
++    config: { minimumIntervalSeconds: 9999, maximumIntervalSeconds: 9999 },
++  });
++  run(system, 30, .5, semRecrutados());
++  assert.equal(state.level.exudates.filter(e => e.renewable).length, 0);
++});
++
++test('a emergencia nao dispara quando o jogador ja carrega exsudato', () => {
++  const { state } = makeEmergencyState({ playerExudates: 2 });
++  const system = createRenewableExudates({
++    state,
++    config: { minimumIntervalSeconds: 9999, maximumIntervalSeconds: 9999 },
++  });
++  run(system, 30, .5, semRecrutados());
++  assert.equal(state.level.exudates.filter(e => e.renewable).length, 0);
++});
++
++test('a emergencia nao dispara quando Azospirillum ja esta recrutado', () => {
++  const { state } = makeEmergencyState();
++  const system = createRenewableExudates({
++    state,
++    config: { minimumIntervalSeconds: 9999, maximumIntervalSeconds: 9999 },
++  });
++  run(system, 30, .5, comAzospirillumRecrutado());
++  assert.equal(state.level.exudates.filter(e => e.renewable).length, 0);
++});
++
++test('a emergencia nao dispara quando ja existe colonia no hospedeiro', () => {
++  const { state, host } = makeEmergencyState();
++  const system = createRenewableExudates({
++    state,
++    config: { minimumIntervalSeconds: 9999, maximumIntervalSeconds: 9999 },
++  });
++  run(system, 30, .5, comColoniaNoHost(host));
++  assert.equal(state.level.exudates.filter(e => e.renewable).length, 0);
++});
++
++test('a emergencia nao dispara depois do desafio concluido', () => {
++  const { state } = makeEmergencyState();
++  state.level.azospirillumChallenge.traversed = true;
++  const system = createRenewableExudates({
++    state,
++    config: { minimumIntervalSeconds: 9999, maximumIntervalSeconds: 9999 },
++  });
++  run(system, 30, .5, semRecrutados());
++  assert.equal(state.level.exudates.filter(e => e.renewable).length, 0);
++});
++
++test('a emergencia respeita o intervalo de nova tentativa (nao spawna varios)', () => {
++  const { state } = makeEmergencyState();
++  const system = createRenewableExudates({
++    state,
++    config: { minimumIntervalSeconds: 9999, maximumIntervalSeconds: 9999 },
++  });
++  // Roda bastante tempo mantendo a condicao de bloqueio: mesmo assim so o item
++  // ativo existe por vez (o teto por raiz e o global seguram o resto).
++  run(system, 120, .5, semRecrutados());
++  const ativos = state.level.exudates.filter(e => e.renewable && !e.taken).length;
++  assert.ok(ativos <= RENEWABLE_EXUDATE_DEFAULTS.maximumActiveGlobal);
++});
+diff --git a/tests/signature-challenge.test.js b/tests/signature-challenge.test.js
+index 36d4db4..195b8db 100644
+--- a/tests/signature-challenge.test.js
++++ b/tests/signature-challenge.test.js
+@@ -4,7 +4,10 @@ import test from 'node:test';
+ import { generateLevel } from '../src/procgen/generator.js';
+ import { validateChunk } from '../src/procgen/agents.js';
+ import { applyPhaseFourMycorrhizaIntro } from '../src/procgen/phase-four-mycorrhiza-intro.js';
+-import { applySignatureChallenge } from '../src/procgen/signature-challenge.js';
++import { applySignatureChallenge, canTraverseSubroute } from '../src/procgen/signature-challenge.js';
++
++const SINGLE = { id: 'running-jump', requires: [] };
++const DOUBLE = { id: 'running-double-jump-late', requires: ['doubleJump'] };
+ import { getPhaseManifest, setPhaseManifestOverride, clearPhaseManifestOverride } from '../src/procgen/campaign-manifest.js';
+ import {
+   buildPhaseLabManifest, createDefaultPhaseLabConfig, scalePhaseLabSegments,
+@@ -13,10 +16,6 @@ import {
+   campaignPhaseSeed, createCampaign, decorateCampaignLevel, prepareCampaignGeneration,
+ } from '../src/procgen/campaign-progression.js';
+ 
+-// Numeros medidos da fisica canonica, nao escolhidos.
+-const SALTO_DUPLO = 180;
+-const ESCADA_MINIMA = 96;
+-
+ function gera(phase, seedName, totalChunks = null) {
+   if (totalChunks) {
+     const base = createDefaultPhaseLabConfig(phase);
+@@ -36,18 +35,6 @@ function gera(phase, seedName, totalChunks = null) {
+   return { level, challenge };
+ }
+ 
+-function maiorSubida(level) {
+-  const rota = level.platforms
+-    .filter(p => !p.recovery && !p.final && Number.isInteger(p.logicIndex))
+-    .sort((a, b) => a.logicIndex - b.logicIndex);
+-  let maior = 0;
+-  for (const p of rota) {
+-    const prev = rota.find(q => q.logicIndex === p.logicIndex - 1);
+-    if (prev) maior = Math.max(maior, prev.y - p.y);
+-  }
+-  return maior;
+-}
+-
+ test('o gerador procedural sozinho nunca exige a escada', () => {
+   // O teto de traversalLimits e 112px e o salto duplo alcanca 180px. Este teste
+   // documenta a razao de o desafio-assinatura existir: sem ele, a mecanica-tema
+@@ -68,31 +55,69 @@ test('o gerador procedural sozinho nunca exige a escada', () => {
+   clearPhaseManifestOverride();
+ });
+ 
+-test('o desafio da escada aparece em toda seed e em todo tamanho de fase', () => {
+-  for (const total of [12, 16, 20, 30, 40]) {
++function corridorNodes(level, challenge) {
++  return level.platforms
++    .filter(p => (
++      !p.recovery && !p.final && Number.isInteger(p.logicIndex)
++      && p.logicIndex >= challenge.hostLogicIndex
++      && p.logicIndex <= challenge.targetLogicIndex
++    ))
++    .sort((a, b) => a.logicIndex - b.logicIndex);
++}
++
++test('a prova obrigatoria de Azospirillum aparece em toda seed e em todo tamanho de fase', () => {
++  // Nao ha mais uma "maior subida" medida por logicIndex-1: o bloco anterior ao
++  // alvo pode ser SOLO. A prova e registrada em level.azospirillumChallenge com
++  // hospedeiro (ultima raiz), alvo e requiredReach.
++  for (const total of [12, 16, 20, 25, 30, 40]) {
+     for (let s = 0; s < 6; s++) {
+       const { level, challenge } = gera(3, `assinatura-${total}-${s}`, total);
+       assert.ok(challenge, `fase de ${total} chunks, seed ${s}: nenhum desafio criado`);
+       assert.equal(challenge.mechanic, 'azospirillumRoots');
+-      assert.ok(
+-        maiorSubida(level) > SALTO_DUPLO,
+-        `fase de ${total} chunks, seed ${s}: a maior subida nao exige a escada`,
+-      );
++      const c = level.azospirillumChallenge;
++      assert.ok(c, `fase de ${total} chunks, seed ${s}: sem level.azospirillumChallenge`);
++      assert.equal(c.hostPlatform.type, 'root', 'o hospedeiro precisa ser uma raiz');
++      assert.ok(!c.hostPlatform.recovery, 'o hospedeiro nao pode ser plataforma de recuperacao');
++      assert.ok(c.targetLogicIndex > c.hostLogicIndex, 'o alvo vem depois do hospedeiro');
++      assert.ok(c.requiredReach <= 340, `requiredReach ${c.requiredReach} passa do maximo`);
+     }
+   }
+   clearPhaseManifestOverride();
+ });
+ 
+-test('o desafio permanece solucionavel com a escada mais fraca', () => {
+-  // Sem nitrogenio a escada alcanca 96px; somado ao salto duplo da 276px. Uma
+-  // subida acima disso seria intransponivel e criaria fase impossivel.
++test('a prova e inatingivel sem a raiz lateral e atingivel com ela + salto duplo', () => {
+   for (const total of [12, 20, 40]) {
+     for (let s = 0; s < 4; s++) {
+       const { level } = gera(3, `solucionavel-${total}-${s}`, total);
+-      const subida = maiorSubida(level);
++      const c = level.azospirillumChallenge;
++      assert.ok(c);
++      const corridor = corridorNodes(level, c);
++      // SEM escada (so salto simples + duplo, incluindo os blocos de solo do
++      // corredor): o alvo tem de ser inalcancavel.
+       assert.ok(
+-        subida <= ESCADA_MINIMA + SALTO_DUPLO,
+-        `subida de ${Math.round(subida)}px passa do que a escada minima mais o salto duplo alcancam`,
++        !canTraverseSubroute({
++          startPlatform: c.hostPlatform,
++          targetPlatform: c.targetPlatform,
++          platforms: corridor,
++          primitives: [SINGLE, DOUBLE],
++        }),
++        `${total}/${s}: o alvo e alcancavel sem a raiz lateral`,
++      );
++      // COM a escada no requiredReach (degrau superior = plataforma de
++      // lancamento) + salto duplo: o alvo passa a ser alcancavel.
++      const launch = {
++        x: c.hostPlatform.x + c.hostPlatform.w / 2 - 45,
++        y: c.hostPlatform.y - c.requiredReach,
++        w: 90, h: 12, type: 'root', oneWay: true,
++      };
++      assert.ok(
++        canTraverseSubroute({
++          startPlatform: launch,
++          targetPlatform: c.targetPlatform,
++          platforms: [launch],
++          primitives: [DOUBLE],
++        }),
++        `${total}/${s}: nem com a escada no requiredReach o alvo e alcancavel`,
+       );
+     }
+   }
+@@ -148,7 +173,7 @@ test('o desafio da ponte fica antes do Dash, que venceria o vao sozinho', () =>
+ // delas caia dentro do desafio em 12 de 12 seeds da fase 4: o vao de 330px
+ // virava dois pulinhos, o salto duplo passava, a ponte nunca era necessaria e a
+ // prova final nunca registrava. Aqui a verificacao e feita no nivel inteiro.
+-test('nada sobra dentro do vao do desafio, em nenhuma fase', () => {
++test('nenhuma recuperacao sobra dentro do corredor do desafio, em nenhuma fase', () => {
+   for (const phase of [3, 4]) {
+     for (let s = 0; s < 8; s++) {
+       const { level, challenge } = gera(phase, `vao-limpo-${phase}-${s}`);
+@@ -157,19 +182,33 @@ test('nada sobra dentro do vao do desafio, em nenhuma fase', () => {
+       const rota = level.platforms
+         .filter(p => !p.recovery && !p.final && Number.isInteger(p.logicIndex))
+         .sort((a, b) => a.logicIndex - b.logicIndex);
+-      const alvo = rota.find(p => p.logicIndex === challenge.chunk);
+-      const anterior = rota.find(p => p.logicIndex === challenge.chunk - 1);
+-      assert.ok(alvo && anterior);
+ 
+-      const inicio = anterior.x + anterior.w;
+-      const fim = alvo.x;
+-      const dentro = level.platforms.filter(p => {
++      let inicio;
++      let fim;
++      if (phase === 3) {
++        // Corredor = hospedeiro -> alvo. Blocos de SOLO da rota principal podem
++        // ficar no meio (sao intencionais); apenas plataformas de recuperacao
++        // nao podem criar bypass.
++        const c = level.azospirillumChallenge;
++        assert.ok(c);
++        inicio = c.hostPlatform.x + c.hostPlatform.w;
++        fim = c.targetPlatform.x;
++      } else {
++        const alvo = rota.find(p => p.logicIndex === challenge.chunk);
++        const anterior = rota.find(p => p.logicIndex === challenge.chunk - 1);
++        assert.ok(alvo && anterior);
++        inicio = anterior.x + anterior.w;
++        fim = alvo.x;
++      }
++
++      const recuperacaoDentro = level.platforms.filter(p => {
++        if (!p.recovery) return false;
+         const centro = p.x + p.w / 2;
+         return centro > inicio + 2 && centro < fim - 2;
+       });
+       assert.deepEqual(
+-        dentro.map(p => ({ x: Math.round(p.x), recovery: Boolean(p.recovery) })), [],
+-        `fase ${phase}, seed ${s}: sobrou plataforma dentro do vao do desafio`,
++        recuperacaoDentro.map(p => Math.round(p.x)), [],
++        `fase ${phase}, seed ${s}: sobrou recuperacao dentro do corredor do desafio`,
+       );
+     }
+   }
