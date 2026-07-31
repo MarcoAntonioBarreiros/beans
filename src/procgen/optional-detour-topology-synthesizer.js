@@ -176,7 +176,19 @@ function primaryClearanceOf(platform, primaryRoute) {
       other.x >= platform.x + platform.w
       || other.x + other.w <= platform.x
     ) continue;
-    if (other.y <= platform.y) continue;
+    // A rota opcional vive ACIMA da principal, então só a primária que passa
+    // por BAIXO precisava ser medida. Essa premissa valeu enquanto a rota
+    // principal era plana.
+    //
+    // O degrau de um portão de subida a quebra: ele é primário e fica 240 a
+    // 330 px ALTO de propósito, então caía neste `continue` e nunca era
+    // medido. No playtest a rota opcional encostou nele com 67 px de folga
+    // onde o contrato pede 270, e os dois blocos apareceram colados na tela.
+    if (other.y <= platform.y) {
+      if (!other.ascentGate) continue;
+      minimum = Math.min(minimum, platform.y - (other.y + other.h));
+      continue;
+    }
     minimum = Math.min(minimum, other.y - (platform.y + platform.h));
   }
   return minimum;

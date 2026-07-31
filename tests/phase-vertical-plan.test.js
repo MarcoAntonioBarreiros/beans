@@ -8,7 +8,12 @@ import {
 } from '../src/procgen/campaign-progression.js';
 import { auditTraversableRoute, generateLevel } from '../src/procgen/generator.js';
 import { getPrimaryTraversalPlatforms } from '../src/procgen/traversal-route.js';
-import { generateAzospirillumRootLadders } from '../src/procgen/azospirillum-root-growth.js';
+import {
+  ensureAzospirillumBeforeAscentGates,
+  generateAzospirillumRootLadders,
+} from '../src/procgen/azospirillum-root-growth.js';
+import { OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE } from '../src/procgen/optional-detour-planner.js';
+import { createPhaseTenTopologyDetour } from '../src/procgen/optional-detour-topology-synthesizer.js';
 import { generateCampaignEncounters } from '../src/procgen/campaign-encounters.js';
 import {
   ASCENT_GATE_MINIMUM_CHUNK,
@@ -368,6 +373,81 @@ test('portão - a auditoria o lê como travessia intencional, não como falha', 
       `${entry.seed}: nenhum portão reconhecido entre ${audit.intentionalCrossings.length} travessias`,
     );
   }
+});
+
+test('portão - o Azospirillum está disponível ANTES do primeiro portão', () => {
+  // No playtest o portão apareceu antes de qualquer Azospirillum na rota: a
+  // fase só destravou porque o jogador seguiu adiante, achou a colônia e
+  // VOLTOU. Isso é softlock com passos extras. A regra é a que ele enunciou —
+  // o desafio aparece no ponto em que o Azo já está disponível, ou depois.
+  let checked = 0;
+  for (const entry of GATED) {
+    const gates = entry.level.ascentGates || [];
+    if (!gates.length) continue;
+    const encounters = ensureAzospirillumBeforeAscentGates({
+      level: entry.level,
+      encounters: generateCampaignEncounters({
+        platforms: entry.level.platforms,
+        phase: 10,
+        seedValue: entry.seed,
+      }),
+      seedValue: entry.seed,
+      phase: 10,
+    });
+    const firstAzospirillum = encounters
+      .filter(encounter => encounter.id === 'azospirillum' && Number.isInteger(encounter.logicIndex))
+      .map(encounter => encounter.logicIndex)
+      .sort((left, right) => left - right)[0];
+    const firstGate = Math.min(...gates.map(gate => gate.chunkIndex));
+    assert.ok(
+      Number.isInteger(firstAzospirillum),
+      `${entry.seed}: portão em c${firstGate} sem nenhum Azospirillum na fase`,
+    );
+    assert.ok(
+      firstAzospirillum < firstGate,
+      `${entry.seed}: Azo em c${firstAzospirillum} e portão em c${firstGate}`,
+    );
+    checked++;
+  }
+  assert.ok(checked >= 8, `só ${checked} seeds com portão para conferir`);
+});
+
+test('portão - a rota opcional não encosta no degrau', () => {
+  // O degrau é primário e fica ALTO de propósito. `primaryClearanceOf` só
+  // media a primária que passa por BAIXO da opcional, então o degrau caía num
+  // `continue` e nunca era medido: no playtest a rota opcional apareceu colada
+  // nele, com 67 px de folga onde o contrato pede 270.
+  let gatesWithDetour = 0;
+  for (const entry of GATED.slice(0, 8)) {
+    const gates = entry.level.ascentGates || [];
+    if (!gates.length) continue;
+    const level = entry.level;
+    createPhaseTenTopologyDetour({
+      level,
+      phase: 10,
+      seedValue: entry.seed,
+      abilities: ['doubleJump', 'dash', 'phosphateSolubilization', 'mycorrhizaStructures'],
+    });
+    const optional = (level.platforms || [])
+      .filter(platform => platform.routeScope === 'optional');
+    if (!optional.length) continue;
+    gatesWithDetour++;
+    for (const gate of gates) {
+      const step = gate.destination;
+      for (const platform of optional) {
+        const overlapsX = platform.x < step.x + step.w && platform.x + platform.w > step.x;
+        if (!overlapsX) continue;
+        const separation = platform.y >= step.y
+          ? platform.y - (step.y + step.h)
+          : step.y - (platform.y + platform.h);
+        assert.ok(
+          separation >= OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE,
+          `${entry.seed}: opcional a ${Math.round(separation)}px do degrau c${gate.chunkIndex}`,
+        );
+      }
+    }
+  }
+  assert.ok(gatesWithDetour >= 1, 'nenhuma seed produziu portão e desvio juntos');
 });
 
 test('portão - a verticalidade sobe de verdade, em fração de tela', () => {

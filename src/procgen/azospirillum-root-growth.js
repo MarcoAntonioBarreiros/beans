@@ -531,6 +531,69 @@ export function generateAzospirillumRootLadders({
   return level.azospirillumRootLadders;
 }
 
+// Folga, em chunks, entre encontrar o Azospirillum e chegar ao portão. Um
+// chunk só não basta: o jogador precisa ver o organismo, recrutá-lo e ainda
+// colher um exsudato antes de topar com o degrau.
+const ASCENT_GATE_AZO_LEAD_CHUNKS = 2;
+
+/**
+ * Garante que o Azospirillum esteja DISPONÍVEL antes do primeiro portão de
+ * subida, devolvendo a lista de encontros (estendida quando faltava).
+ *
+ * Sem isto o portão é um softlock com passos extras: no playtest ele apareceu
+ * antes de qualquer Azospirillum na rota, e a fase só destravou porque o
+ * jogador voltou depois de achar a colônia mais adiante. A regra é a que o
+ * jogador enunciou — o desafio aparece NO ponto em que o Azo já está
+ * disponível, ou depois dele.
+ *
+ * Nunca move o portão nem a geometria: a geometria já foi validada. O que se
+ * ajusta é a ORDEM em que a fase apresenta o organismo.
+ */
+export function ensureAzospirillumBeforeAscentGates({
+  level,
+  encounters = [],
+  seedValue = '',
+  phase = 10,
+} = {}) {
+  const gates = level?.ascentGates || [];
+  if (!gates.length) return encounters;
+  const firstGateChunk = Math.min(...gates.map(gate => gate.chunkIndex));
+  const deadline = firstGateChunk - ASCENT_GATE_AZO_LEAD_CHUNKS;
+  const firstAzospirillum = encounters
+    .filter(encounter => encounter.id === 'azospirillum' && Number.isInteger(encounter.logicIndex))
+    .map(encounter => encounter.logicIndex)
+    .sort((left, right) => left - right)[0];
+  if (Number.isInteger(firstAzospirillum) && firstAzospirillum <= deadline) return encounters;
+
+  const candidates = routePlatforms(level).filter(platform => (
+    Number.isInteger(platform.logicIndex)
+    && platform.logicIndex >= 1
+    && platform.logicIndex <= Math.max(1, deadline)
+    && platform.w >= 120
+    && !platform.final
+    && !platform.ascentGate
+  ));
+  if (!candidates.length) return encounters;
+  // O mais tarde possível dentro do prazo: aproxima o encontro do portão sem
+  // ultrapassá-lo, para não competir com as estreias do começo da fase.
+  const host = candidates[candidates.length - 1];
+  const random = createRandom(`${seedValue}:ascent-gate-azospirillum:p${phase}`);
+  return [
+    ...encounters,
+    {
+      id: 'azospirillum',
+      x: host.x + host.w * (.3 + random() * .4),
+      y: host.y - 46 - random() * 26,
+      r: 155,
+      territory: 620,
+      collect: false,
+      logicIndex: host.logicIndex,
+      source: 'ascent-gate-prerequisite',
+      requiresSeenCardId: null,
+    },
+  ];
+}
+
 function activeAzospirillumColony(inoculants, ladder) {
   return (inoculants.colonies || []).find(colony => (
     colony.type === 'azospirillum'

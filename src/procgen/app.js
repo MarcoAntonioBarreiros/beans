@@ -1,7 +1,10 @@
 import { generateLevel, auditTraversableRoute } from './generator.js';
 import { generateCampaignEncounters } from './campaign-encounters.js';
 import { generateUnderdevelopedNitrogenRoots } from './nitrogen-root.js';
-import { generateAzospirillumRootLadders } from './azospirillum-root-growth.js';
+import {
+  ensureAzospirillumBeforeAscentGates,
+  generateAzospirillumRootLadders,
+} from './azospirillum-root-growth.js';
 import { createCampaignObjectiveEvaluator } from './campaign-objectives.js';
 import { applyPhaseOneVerticalSlice, createFixedBlockRuntime } from './phase-one-vertical-slice.js';
 import { applySignatureChallenge } from './signature-challenge.js';
@@ -797,6 +800,15 @@ function prepareLevel() {
     levelData.microbeEncounters,
     campaign.phase,
   );
+  // Antes de qualquer escada: o organismo que a faz crescer tem de estar
+  // disponível ANTES do primeiro portão. Sem isto o portão é um softlock com
+  // passos extras.
+  levelData.microbeEncounters = ensureAzospirillumBeforeAscentGates({
+    level: levelData,
+    encounters: levelData.microbeEncounters,
+    seedValue: seed,
+    phase: campaign.phase,
+  });
   // Cada portão de subida vira um pedido AUTORAL de escada. A rota pede a
   // escada onde ela é necessária, em vez de a escada procurar depois um
   // desnível que sirva — era essa procura que fazia a raiz lateral parecer

@@ -251,7 +251,11 @@ export const AZO_ASCENT_RISE_RANGE = Object.freeze([240, 330]);
 // Chunk mínimo para um portão. Abaixo de 4 o gerador ainda está no regime
 // "forgiving" (maxRise 28) e o trecho serve de aquecimento — pôr uma escada ali
 // tranca o jogador antes de ele ter checkpoint.
-export const ASCENT_GATE_MINIMUM_CHUNK = 4;
+//
+// 6, e não 4, porque o portão precisa de espaço ANTES dele: o jogador tem de
+// cruzar com o Azospirillum, recrutá-lo e colher um exsudato. Com o portão em
+// c4 sobravam três chunks para as três coisas.
+export const ASCENT_GATE_MINIMUM_CHUNK = 6;
 
 /**
  * Chunks em que a subida deixa de ser saltável e passa a exigir escada.
