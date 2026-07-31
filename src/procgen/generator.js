@@ -88,9 +88,18 @@ function stabilizeGeometry(candidate, previous, chunk, primitive, index, vertica
   // serpenteava DENTRO da faixa. O passo agora é puxado em direção à linha-alvo
   // — o acaso continua escolhendo o relevo local, mas quem decide a direção do
   // trecho é o plano.
-  const pulled = band
-    ? lerp(previous.y + rawDeltaY, band.target, VERTICAL_PLAN_PULL)
-    : previous.y + rawDeltaY;
+  // A atração NUNCA briga com a intenção da zona. Sem esta regra, um degrau
+  // alto de escada jogava a rota acima da linha-alvo e os chunks seguintes a
+  // puxavam de volta para baixo — a escalada era desfeita pelo próprio plano.
+  let pulled = previous.y + rawDeltaY;
+  if (band) {
+    const towardTarget = lerp(pulled, band.target, VERTICAL_PLAN_PULL);
+    const climbing = band.verticalIntent === 'climb' || band.verticalIntent === 'recover';
+    const descending = band.verticalIntent === 'descend' || band.verticalIntent === 'valley';
+    if (climbing && towardTarget > previous.y) pulled = Math.min(pulled, previous.y);
+    else if (descending && towardTarget < previous.y) pulled = Math.max(pulled, previous.y);
+    else pulled = towardTarget;
+  }
   const desiredY = clamp(pulled, floorY, ceilingY);
   candidate.y = previous.y + clamp(desiredY - previous.y, -limits.maxRise, limits.maxDrop);
   if (band) candidate.verticalZoneId = band.zoneId;
@@ -411,7 +420,11 @@ export function generateLevel(seedString, {
 
     while (attempts < 12 && !accepted) {
       prim = validPrims[Math.floor(rnd() * validPrims.length)];
-      nextPlatform = stabilizeGeometry(generateGeometry(chunk, prevPlatform, prim, rnd), prevPlatform, chunk, prim, i, verticalPlan);
+      const plannedBand = verticalPlan ? verticalBandAt(verticalPlan, i) : null;
+      nextPlatform = stabilizeGeometry(
+        generateGeometry(chunk, prevPlatform, prim, rnd, plannedBand),
+        prevPlatform, chunk, prim, i, verticalPlan,
+      );
       accepted = validated(nextPlatform, prevPlatform, prim, chunk, i);
       attempts++;
     }

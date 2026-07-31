@@ -243,6 +243,55 @@ export function validatePhaseVerticalPlan(plan) {
  * dentro da zona: a linha-alvo se move a cada chunk, e é esse movimento que
  * transforma passos aleatórios numa subida ou numa descida legível.
  */
+// Altura de um degrau servido por escada de Azospirillum. Vem do acesso da rota
+// opcional (`ACCESS_VERTICAL_RISES`, 230 a 340 px), que é a faixa que o runtime
+// da escada já sabe construir e o jogador já sabe usar.
+export const AZO_ASCENT_RISE_RANGE = Object.freeze([240, 330]);
+
+/**
+ * Chunks em que a subida deixaria de ser saltável e passaria a exigir escada.
+ *
+ * AINDA NÃO LIGADO ao gerador. A tentativa de fiar isto elevava a plataforma de
+ * destino e algo a reescrevia depois — o degrau saía 19 px ABAIXO do hospedeiro
+ * em vez de 250 acima, e o pedido de escada apontava para uma geometria que não
+ * existia. Fica aqui porque as faixas são medidas e valem: é o ponto de partida
+ * de quem retomar.
+ *
+ * É aqui que a verticalidade real nasce. `traversalLimits` deixa cada passo
+ * subir 46 a 92 px — teto do salto duplo, e não dá para elevá-lo sem tornar a
+ * rota intraversável. Uma zona de 8 chunks chega a ~350 px, o que numa fase de
+ * dez telas de largura é uma rampa, não uma torre.
+ *
+ * A escada de Azospirillum sobe 240 a 330 px em UM passo. Três degraus desses
+ * fazem 700 a 1000 px — isso cabe na tela e se lê como torre. O runtime já
+ * existe; o que faltava era a rota PEDIR, em vez de a escada procurar onde
+ * encaixar depois (foi por isso que ela parecia aparecer por acaso).
+ */
+export function plannedAscentGates(plan, { minimumZoneRise = 300 } = {}) {
+  if (!plan) return [];
+  const gates = [];
+  for (const zone of plan.zones) {
+    if (zone.realizedDelta > -minimumZoneRise) continue;
+    // Um degrau a cada ~5 chunks da zona, no máximo três: mais que isso vira
+    // elevador, não escalada.
+    const count = Math.max(1, Math.min(3, Math.floor(zone.chunkSpan / 5)));
+    for (let index = 0; index < count; index++) {
+      const at = zone.fromChunk + Math.round(
+        ((index + 1) / (count + 1)) * (zone.toChunk - zone.fromChunk),
+      );
+      if (at <= 0 || at >= plan.totalChunks - 1) continue;
+      if (gates.some(gate => Math.abs(gate.chunkIndex - at) < 3)) continue;
+      gates.push({
+        chunkIndex: at,
+        zoneId: zone.id,
+        mechanic: 'azospirillumAscent',
+        riseRange: AZO_ASCENT_RISE_RANGE,
+      });
+    }
+  }
+  return gates;
+}
+
 export function verticalBandAt(plan, index) {
   if (!plan) return null;
   const zone = plan.zones.find(entry => index >= entry.fromChunk && index <= entry.toChunk)
@@ -256,7 +305,15 @@ export function verticalBandAt(plan, index) {
     role: zone.role,
     verticalIntent: zone.verticalIntent,
     target: Math.round(target),
-    top: Math.round(Math.max(plan.envelope.top, target - half)),
+    // Limites absolutos que `generateGeometry` aplica no nascimento da
+    // plataforma. Sem eles a fase continua presa em 220..560, por mais que o
+    // plano peça outra coisa.
+    floorLimit: plan.envelope.top,
+    ceilingLimit: plan.envelope.bottom,
+    // O teto da faixa abre para caber um degrau de escada inteiro: sem isso, a
+    // plataforma que a escada alcanca cairia fora da faixa e os chunks
+    // seguintes a arrastariam para baixo.
+    top: Math.round(Math.max(plan.envelope.top, target - half - 340)),
     bottom: Math.round(Math.min(plan.envelope.bottom, target + half)),
   };
 }
