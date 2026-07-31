@@ -455,6 +455,46 @@ export function createPlatformVisuals({ state }) {
     ctx.restore();
   }
 
+  // Portões de subida da ROTA PRINCIPAL. Desenha o desnível pedido entre
+  // hospedeiro e degrau, e o estado da escada que o abre. Nada aqui vira
+  // colisor: é só `ctx`.
+  function drawAscentGateDebug(ctx) {
+    if (!state.level.traversalDebugVisible) return;
+    const gates = state.level.ascentGates || [];
+    if (!gates.length) return;
+    ctx.save();
+    ctx.font = '600 11px ui-monospace, SFMono-Regular, Consolas, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    for (const gate of gates) {
+      const { host, destination } = gate;
+      if (!host || !destination) continue;
+      const ladder = (state.level.azospirillumRootLadders || [])
+        .find(entry => entry.ascentGateId === gate.id || entry.host === host) || null;
+      const developed = Boolean(ladder?.developed);
+      ctx.strokeStyle = developed ? '#8ef5b0' : '#72e8dd';
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.lineWidth = 3;
+      ctx.setLineDash(developed ? [] : [9, 6]);
+      const x = host.x + host.w - 10;
+      ctx.beginPath();
+      ctx.moveTo(x, host.y - 6);
+      ctx.lineTo(x, destination.y - 6);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Contorno do degrau: o que a rota PEDIU, para conferir contra o que
+      // apareceu na tela.
+      ctx.lineWidth = 2;
+      ctx.strokeRect(destination.x, destination.y, destination.w, destination.h);
+      const estado = !ladder ? 'SEM ESCADA'
+        : developed ? 'escada madura'
+        : ladder.progress > 0 ? `escada ${Math.round(ladder.progress * 100)}%`
+        : 'inocular Azospirillum aqui';
+      ctx.fillText(`PORTAO +${gate.rise}px — ${estado}`, x + 8, destination.y - 12);
+    }
+    ctx.restore();
+  }
+
   // Overlay do §21. Desenha limites de zona, nós do grafo, arestas normais, a
   // aresta bloqueada, o vão intencional e a saída por queda. Nada aqui cria
   // colisor: é só `ctx`.
@@ -614,6 +654,7 @@ export function createPlatformVisuals({ state }) {
     drawTraversalDebug(ctx);
     drawOptionalDetourDebug(ctx);
     drawTopologyT1Debug(ctx);
+    drawAscentGateDebug(ctx);
 
     ctx.restore();
   }

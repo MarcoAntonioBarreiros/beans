@@ -110,6 +110,26 @@ function inlineRuntimeStyles(html) {
   );
 }
 
+// Carimbo de build. Sem ele não havia como saber, DENTRO do jogo, qual versão
+// estava publicada — e mais de uma sessão de playtest se perdeu comparando um
+// print com o commit errado. Vai para o painel de debug (Tab).
+function buildStamp() {
+  const read = command => {
+    try {
+      return require('node:child_process')
+        .execSync(command, { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString().trim();
+    } catch (_) {
+      return '';
+    }
+  };
+  return {
+    commit: read('git rev-parse --short HEAD') || 'desconhecido',
+    subject: read('git log -1 --format=%s').slice(0, 72) || '',
+    builtAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
+  };
+}
+
 function build() {
   const htmlPath = path.join(root, 'index.html');
   const html = fs.readFileSync(htmlPath, 'utf8');
@@ -120,11 +140,12 @@ function build() {
 
   const entries = moduleScripts.map(match => resolveImport(htmlPath, match[1]));
   const bundle = createBundle(entries).replace(/<\/script/gi, '<\\/script');
+  const stamp = JSON.stringify(buildStamp()).replace(/<\/script/gi, '<\\/script');
   let inserted = false;
   const bundledHtml = html.replace(moduleScriptPattern, () => {
     if (inserted) return '';
     inserted = true;
-    return `<script>\n${bundle}\n</script>`;
+    return `<script>\nwindow.__BEANS_BUILD__ = ${stamp};\n${bundle}\n</script>`;
   });
   const standalone = inlineRuntimeStyles(bundledHtml).replace(/[ \t]+$/gm, '');
 

@@ -7,11 +7,17 @@ import {
   prepareCampaignGeneration,
 } from '../src/procgen/campaign-progression.js';
 import { auditTraversableRoute, generateLevel } from '../src/procgen/generator.js';
+import { getPrimaryTraversalPlatforms } from '../src/procgen/traversal-route.js';
+import { generateAzospirillumRootLadders } from '../src/procgen/azospirillum-root-growth.js';
+import { generateCampaignEncounters } from '../src/procgen/campaign-encounters.js';
 import {
+  ASCENT_GATE_MINIMUM_CHUNK,
+  AZO_ASCENT_RISE_RANGE,
   createPhaseVerticalPlan,
   PHASE_SILHOUETTE_CONTRACTS,
   PHASE_SILHOUETTE_FAMILY_IDS,
   PHASE_VERTICAL_ENVELOPE,
+  plannedAscentGates,
   validatePhaseVerticalPlan,
   verticalBandAt,
 } from '../src/procgen/phase-vertical-plan.js';
@@ -36,19 +42,24 @@ function phaseTen(seed, { verticalPlan = false } = {}) {
   return decorateCampaignLevel(level, campaign, profile);
 }
 
-// Só as plataformas do percurso: raízes de recuperação e blocos de encontro
-// compartilham `logicIndex` e, contadas junto, inflam a amplitude e escondem a
-// serpentina — foi assim que a primeira medição desta silhueta enganou.
+// A ROTA, como o próprio pipeline a define. Blocos de encontro ficam de fora
+// porque vários compartilham o mesmo `logicIndex` e, contados junto, inflam a
+// amplitude e escondem a serpentina — foi assim que a primeira medição desta
+// silhueta enganou.
+//
+// As plataformas `repaired` FICAM. A primeira versão desta função as excluía
+// junto com as de recuperação, e isso media a silhueta de meia fase: metade dos
+// chunks (20 de 40, medido) sai de `createSafeFallback`. Foi essa exclusão que
+// escondeu por tanto tempo o clamp absoluto `[250, 555]` que o fallback
+// aplicava — o mesmo defeito da senoide e do `[220, 560]`.
 function routePlatforms(level) {
-  return (level.platforms || [])
+  return getPrimaryTraversalPlatforms(level)
     .filter(platform => (
       Number.isInteger(platform.logicIndex)
       && platform.logicIndex >= 0
       && !platform.recovery
-      && !platform.repaired
       && !platform.encounterInstanceId
-    ))
-    .sort((left, right) => left.logicIndex - right.logicIndex || left.x - right.x);
+    ));
 }
 
 function silhouetteOf(level) {
@@ -94,6 +105,40 @@ const PLANNED = SEEDS.map(seed => {
   const level = phaseTen(seed, { verticalPlan: true });
   return { level, silhouette: silhouetteOf(level) };
 });
+const GATED = SEEDS.map(seed => {
+  const level = phaseTen(seed, { verticalPlan: { ascentGates: true } });
+  return { seed, level, silhouette: silhouetteOf(level) };
+});
+
+// Reproduz o que `prepareLevel` faz: cada portão vira um pedido AUTORAL de
+// escada. Sem isto o portão é um degrau intransponível e nada mais.
+function withLadders(entry) {
+  const level = entry.level;
+  for (const gate of level.ascentGates || []) {
+    level.authoredAzospirillumLadderRequests = [
+      ...(level.authoredAzospirillumLadderRequests || []),
+      {
+        hostPlatform: gate.host,
+        destinationPlatform: gate.destination,
+        requiredReach: gate.rise,
+        accessStyle: 'phase-ascent-gate',
+        ascentGateId: gate.id,
+      },
+    ];
+  }
+  generateAzospirillumRootLadders({
+    level,
+    phase: 10,
+    seedValue: entry.seed,
+    encounters: generateCampaignEncounters({
+      platforms: level.platforms,
+      phase: 10,
+      seedValue: entry.seed,
+    }),
+    config: null,
+  });
+  return level;
+}
 
 const average = values => values.reduce((sum, value) => sum + value, 0) / values.length;
 
@@ -233,6 +278,150 @@ test('silhueta - sem plano a geração é byte a byte a de hoje', () => {
     assert.equal(geometry(explicitlyOff), geometry(withoutOption), `${seed}: fallback divergiu`);
     assert.equal(withoutOption.verticalPlan, null);
     assert.equal(withoutOption.verticalPlanRequested, false);
+  }
+});
+
+test('portão - só existe quando pedido, e as fases de hoje não mudam', () => {
+  for (const entry of PLANNED) {
+    assert.deepEqual(
+      entry.level.ascentGates,
+      [],
+      'plano sem `ascentGates` não pode criar portão',
+    );
+  }
+  // Sem plano nenhum, nem a lista existe como efeito colateral.
+  const classic = phaseTen(SEEDS[0]);
+  assert.deepEqual(classic.ascentGates, []);
+});
+
+test('portão - sobe além do salto duplo, senão a escada é decoração', () => {
+  // Se um portão coubesse num salto duplo (teto prático de 92 px por passo em
+  // `traversalLimits`), o jogador passaria por cima e a escada de Azospirillum
+  // viraria enfeite. É esta a única razão de o portão existir.
+  const [minimumRise, maximumRise] = AZO_ASCENT_RISE_RANGE;
+  let total = 0;
+  for (const entry of GATED) {
+    for (const gate of entry.level.ascentGates || []) {
+      total++;
+      assert.ok(
+        gate.rise >= minimumRise && gate.rise <= maximumRise,
+        `${entry.seed}: subida ${gate.rise}px fora de ${minimumRise}-${maximumRise}`,
+      );
+      assert.ok(gate.rise > 92, `${entry.seed}: portão saltável (${gate.rise}px)`);
+      assert.ok(
+        gate.chunkIndex >= ASCENT_GATE_MINIMUM_CHUNK,
+        `${entry.seed}: portão em c${gate.chunkIndex}, antes do primeiro checkpoint`,
+      );
+      // A geometria REAL tem de bater com o pedido. As duas tentativas
+      // anteriores morreram justamente aqui: `stabilizeGeometry` esmagava a
+      // subida em 92 px e `createSafeFallback` devolvia a plataforma a
+      // `previous.y ± 42` — o degrau saía ABAIXO do hospedeiro.
+      assert.equal(
+        Math.round(gate.host.y - gate.destination.y),
+        gate.rise,
+        `${entry.seed}: geometria do portão reescrita depois de criada`,
+      );
+      assert.ok(gate.destination.ascentGate, `${entry.seed}: destino sem marca`);
+      assert.ok(gate.host.ascentGateHost, `${entry.seed}: hospedeiro sem marca`);
+      assert.equal(gate.host.type, 'root', `${entry.seed}: hospedeiro não é raiz`);
+    }
+  }
+  assert.ok(total >= 24, `apenas ${total} portões em ${SEEDS.length} seeds`);
+});
+
+test('portão - cada um recebe a escada que o abre', () => {
+  for (const entry of GATED) {
+    const gates = entry.level.ascentGates || [];
+    if (!gates.length) continue;
+    const level = withLadders(entry);
+    const ladders = (level.azospirillumRootLadders || [])
+      .filter(ladder => ladder.accessStyle === 'phase-ascent-gate');
+    assert.equal(
+      ladders.length,
+      gates.length,
+      `${entry.seed}: ${gates.length} portões e ${ladders.length} escadas`,
+    );
+    for (const ladder of ladders) {
+      assert.ok(ladder.steps.length >= 3, `${entry.seed}: escada com ${ladder.steps.length} degraus`);
+      // O espaçamento tem de caber no salto simples (96 px), senão a escada
+      // madura ainda deixa o jogador preso.
+      const spacing = (ladder.startY - ladder.endY) / (ladder.steps.length + 1);
+      assert.ok(spacing <= 96, `${entry.seed}: degraus a ${spacing.toFixed(0)}px`);
+    }
+  }
+});
+
+test('portão - a auditoria o lê como travessia intencional, não como falha', () => {
+  for (const entry of GATED) {
+    const gates = entry.level.ascentGates || [];
+    if (!gates.length) continue;
+    const audit = auditTraversableRoute(entry.level, { doubleJump: true, dash: true }, {});
+    for (const gate of gates) {
+      const asFailure = audit.ordinaryFailures
+        .some(failure => failure.nextLogicIndex === gate.destinationLogicIndex);
+      assert.equal(asFailure, false, `${entry.seed}: portão c${gate.chunkIndex} lido como falha`);
+    }
+    const recognized = audit.intentionalCrossings
+      .filter(crossing => crossing.mechanic === 'azospirillumAscentGate');
+    assert.ok(
+      recognized.length >= 1,
+      `${entry.seed}: nenhum portão reconhecido entre ${audit.intentionalCrossings.length} travessias`,
+    );
+  }
+});
+
+test('portão - a verticalidade sobe de verdade, em fração de tela', () => {
+  const SCREEN_HEIGHT = 720;
+  const amplitude = average(GATED.map(entry => entry.silhouette.verticalRange));
+  const planAmplitude = average(PLANNED.map(entry => entry.silhouette.verticalRange));
+  assert.ok(
+    amplitude >= SCREEN_HEIGHT * 0.7,
+    `amplitude ${(amplitude / SCREEN_HEIGHT * 100).toFixed(0)}% de tela`,
+  );
+  assert.ok(
+    amplitude > planAmplitude * 1.1,
+    `portões ${amplitude.toFixed(0)}px contra ${planAmplitude.toFixed(0)}px sem eles`,
+  );
+});
+
+test('portão - a rota continua auditável e sem falha comum', () => {
+  for (const entry of GATED) {
+    const audit = auditTraversableRoute(entry.level, { doubleJump: true, dash: true }, {});
+    assert.notEqual(audit, null, `${entry.seed}: auditoria não executou`);
+    assert.notEqual(audit.valid, false, `${entry.seed}: rota intraversável`);
+  }
+});
+
+test('silhueta - o fallback respeita o envelope do plano', () => {
+  // O TERCEIRO clamp absoluto do gerador: `createSafeFallback` prendia o Y em
+  // [250, 555]. Como ~17 dos 40 chunks caem nele, era o fallback que achatava
+  // a silhueta — e, com portão, teleportava a rota 316 px para baixo no chunk
+  // seguinte, desfazendo a escada num passo.
+  let above = 0;
+  for (const entry of GATED) {
+    for (const platform of entry.level.platforms || []) {
+      if (!platform.repaired) continue;
+      assert.ok(
+        platform.y >= PHASE_VERTICAL_ENVELOPE.top,
+        `${entry.seed}: fallback acima do envelope (${platform.y})`,
+      );
+      if (platform.y < 250) above++;
+    }
+  }
+  assert.ok(above >= 8, `nenhum fallback acompanhou a rota acima de 250 (${above})`);
+});
+
+test('portão - o plano não põe dois portões colados', () => {
+  for (const seed of SEEDS) {
+    const plan = createPhaseVerticalPlan({ seedValue: seed, phase: 10, totalChunks: 40 });
+    const gates = plannedAscentGates(plan);
+    assert.ok(gates.length <= 6, `${seed}: ${gates.length} portões numa fase só`);
+    for (let index = 1; index < gates.length; index++) {
+      assert.ok(
+        gates[index].chunkIndex - gates[index - 1].chunkIndex >= 3,
+        `${seed}: portões a menos de 3 chunks`,
+      );
+    }
   }
 });
 

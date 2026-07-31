@@ -364,12 +364,30 @@ function phaseSilhouetteDebug(level) {
     return `\nSILHUETA DA FASE: FALLBACK (fase classica)`
       + `\n  motivo: ${violations.join(', ') || 'plano nao gerado'}`;
   }
+  const gates = level.ascentGates || [];
+  // Sem escada de Azospirillum não há portão, e isso precisa aparecer: um
+  // playtest sem a habilidade veria uma silhueta mais fraca e não saberia por
+  // quê.
+  const ladderOf = gate => (level.azospirillumRootLadders || [])
+    .find(ladder => ladder.ascentGateId === gate.id || ladder.host === gate.host) || null;
+  const gateLine = gates.length
+    ? `\n  PORTOES DE SUBIDA: ${gates.map(gate => {
+        const ladder = ladderOf(gate);
+        const estado = !ladder ? 'SEM ESCADA'
+          : ladder.developed ? 'madura'
+          : ladder.progress > 0 ? `${Math.round(ladder.progress * 100)}%${ladder.paused ? ' pausada' : ''}`
+          : 'aguarda inoculacao';
+        return `c${gate.chunkIndex}/+${gate.rise}px[${estado}]`;
+      }).join(' ')}`
+    : `\n  PORTOES DE SUBIDA: nenhum`
+      + `${campaign.unlocks?.azospirillumRoots ? ' (nenhuma zona de subida longa o bastante)' : ' — escada de Azospirillum bloqueada'}`;
   return `\nSILHUETA DA FASE: ${plan.familyId} (${plan.familyLabel})`
     + `\n  zonas: ${plan.zones.map(zone => `${zone.role}/${zone.verticalIntent}`).join(' > ')}`
     + `\n  chunks: ${plan.zones.map(zone => `${zone.fromChunk}-${zone.toChunk}`).join(' | ')}`
     + `\n  Y planejado: ${plan.zones.map(zone => zone.endY).join(' -> ')}`
     + ` | amplitude ${plan.verticalRange}px`
-    + ` | subidas ${plan.climbZones} descidas ${plan.dropZones}`;
+    + ` | subidas ${plan.climbZones} descidas ${plan.dropZones}`
+    + gateLine;
 }
 
 function topologyDetourDebug(level) {
@@ -708,7 +726,11 @@ function prepareLevel() {
     referenceScreenWorldWidth: canvas.width,
     referenceScreenWorldHeight: canvas.height,
     suppressTowerSafeFall: optionalDetourPlaytestMode && campaign.phase === 10,
-    verticalPlan: phaseTopologyMode && campaign.phase === 10,
+    // Os portões de subida ficam condicionados à escada de Azospirillum: sem a
+    // habilidade que os abre, um degrau 280 px acima é softlock, não desafio.
+    verticalPlan: phaseTopologyMode && campaign.phase === 10
+      ? { ascentGates: Boolean(campaign.unlocks?.azospirillumRoots) }
+      : false,
   });
   levelData.optionalDetourPlaytestMode = optionalDetourPlaytestMode;
   const traceGeometry = stage => (
@@ -775,6 +797,22 @@ function prepareLevel() {
     levelData.microbeEncounters,
     campaign.phase,
   );
+  // Cada portão de subida vira um pedido AUTORAL de escada. A rota pede a
+  // escada onde ela é necessária, em vez de a escada procurar depois um
+  // desnível que sirva — era essa procura que fazia a raiz lateral parecer
+  // aparecer por acaso.
+  for (const gate of levelData.ascentGates || []) {
+    levelData.authoredAzospirillumLadderRequests = [
+      ...(levelData.authoredAzospirillumLadderRequests || []),
+      {
+        hostPlatform: gate.host,
+        destinationPlatform: gate.destination,
+        requiredReach: gate.rise,
+        accessStyle: 'phase-ascent-gate',
+        ascentGateId: gate.id,
+      },
+    ];
+  }
   const declaredAzospirillumLadder = getPhaseManifest(campaign.phase)?.azospirillumRootLadder;
   const contextualAzospirillumLadder = campaign.phase >= 5
     && campaign.unlocks.azospirillumRoots
@@ -1526,7 +1564,12 @@ function loop(now) {
       const rootHealth = liveRoots.length
         ? Math.round(liveRoots.reduce((sum, root) => sum + clamp(root.rootHealth ?? 1, 0, 1), 0) / liveRoots.length * 100)
         : 100;
-      debugDiv.textContent = `CAMPANHA: ${campaign.seed} | Fase ${campaign.phase} — ${profile.title} [${profile.theme}]\nSEED: ${seed} [R=nova campanha | Tab=debug]\nTrecho ${Math.max(0, logicIndex + 1)}/${levelData.debugInfo.length}`
+      // Carimbo de build, injetado por scripts/build.cjs. Em `npm run dev`
+      // (módulos soltos) ele não existe — e dizer "local" é a informação certa.
+      const stamp = window.__BEANS_BUILD__;
+      debugDiv.textContent = `BUILD: ${stamp ? `${stamp.commit} (${stamp.builtAt})${stamp.subject ? ` — ${stamp.subject}` : ''}` : 'local (sem bundle)'}`
+        + `${optionalDetourVariant ? ` | modo ?v=${optionalDetourVariant}` : ' | modo padrao'}`
+        + `\nCAMPANHA: ${campaign.seed} | Fase ${campaign.phase} — ${profile.title} [${profile.theme}]\nSEED: ${seed} [R=nova campanha | Tab=debug]\nTrecho ${Math.max(0, logicIndex + 1)}/${levelData.debugInfo.length}`
         + (info ? ` | ${info.primitive} | ${info.logic.difficultyTarget} | vão ${info.gap}px` : '')
         + `\nPoderes: salto ${campaign.unlocks.doubleJump ? '✓' : '—'} / dash ${campaign.unlocks.dash ? '✓' : '—'} / solubilizacao P ${campaign.unlocks.phosphateSolubilization ? '✓' : '—'} / pontes AM ${campaign.unlocks.mycorrhizaStructures ? '✓' : '—'} / raízes Azo ${campaign.unlocks.azospirillumRoots ? '✓' : '—'}`
         + `\nCâmera: ${cameraView.zoom.toFixed(2)}× [roda ou +/− | 0=restaurar]`

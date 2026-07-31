@@ -190,9 +190,32 @@ export function createRenewableExudates({ state, seedValue = null, phase = null,
   // fase parece travada. Depois de emergencyGraceSeconds nessa situacao, uma raiz
   // elegivel entre o ultimo checkpoint e o hospedeiro brota um exsudato. Ele usa
   // o MESMO visual e o mesmo sistema de coleta: parece regeneracao natural.
-  function challengeUnfinished() {
+  // Hospedeiro OBRIGATORIO ainda pendente: aquele em que a fase para se a escada
+  // nao crescer. Sao duas origens, e as duas contam do mesmo jeito:
+  //
+  //   - a prova obrigatoria de Azospirillum (fase 3), pelo `azospirillumChallenge`;
+  //   - os portoes de subida da silhueta (fase 10), pela escada autoral ainda
+  //     nao desenvolvida. O portao esta na ROTA PRINCIPAL: sem a escada nao ha
+  //     por onde passar, entao ele merece exatamente a mesma garantia.
+  //
+  // Devolve o pendente MAIS PROXIMO a frente do jogador — socorrer um portao
+  // que fica cinco telas adiante nao destrava o que esta na cara do jogador.
+  function pendingMandatoryHost() {
+    const candidates = [];
     const challenge = level().azospirillumChallenge;
-    return Boolean(challenge) && !challenge.traversed;
+    if (challenge && !challenge.traversed && challenge.hostPlatform) {
+      candidates.push(challenge.hostPlatform);
+    }
+    for (const ladder of level().azospirillumRootLadders || []) {
+      if (ladder.accessStyle !== 'phase-ascent-gate') continue;
+      if (ladder.developed) continue;
+      if (ladder.host) candidates.push(ladder.host);
+    }
+    if (!candidates.length) return null;
+    const playerX = state.player?.x ?? 0;
+    const ahead = candidates.filter(host => host.x + host.w >= playerX - 40);
+    return (ahead.length ? ahead : candidates)
+      .sort((left, right) => left.x - right.x)[0];
   }
 
   function playerHasNoExudate() {
@@ -237,9 +260,8 @@ export function createRenewableExudates({ state, seedValue = null, phase = null,
 
   function updateEmergency(dt, systems) {
     if (emergencyCooldown > 0) emergencyCooldown = Math.max(0, emergencyCooldown - dt);
-    const challenge = level().azospirillumChallenge;
-    if (!challengeUnfinished() || !challenge?.hostPlatform) { emergencyTimer = 0; return; }
-    const host = challenge.hostPlatform;
+    const host = pendingMandatoryHost();
+    if (!host) { emergencyTimer = 0; return; }
 
     const stuck = playerHasNoExudate()
       && noCollectableExudateAhead(host.x)

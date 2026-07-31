@@ -1,6 +1,7 @@
 import { createRandom } from './random.js';
 import {
   createPhaseVerticalPlan,
+  plannedAscentGates,
   validatePhaseVerticalPlan,
   verticalBandAt,
 } from './phase-vertical-plan.js';
@@ -111,6 +112,61 @@ function stabilizeGeometry(candidate, previous, chunk, primitive, index, vertica
   return candidate;
 }
 
+// PORTÃO DE SUBIDA — geometria autoral, fora do pipeline do chunk
+// ================================================================
+//
+// A plataforma de um portão NÃO passa por `stabilizeGeometry` nem por
+// `validated`. Não é descuido: é a razão de o portão existir.
+// `stabilizeGeometry` fecha em `previous.y + clamp(dy, -maxRise, maxDrop)` e
+// esmagaria os 250 px em 92; o que sobrasse seria reprovado por `validated` e
+// substituído por `createSafeFallback` a `previous.y ± 42`. Duas tentativas
+// anteriores morreram exatamente aí.
+//
+// O precedente é o encontro de travessia, logo acima neste mesmo laço: ele
+// também constrói a própria geometria e segue adiante. A diferença é que o
+// portão deixa um vão INTRANSPONÍVEL de propósito — quem o abre é a escada de
+// Azospirillum, e `isIntentionalDynamicCrossing` o reconhece para a auditoria
+// não o ler como falha.
+const ASCENT_GATE_HOST_MIN_WIDTH = 168;
+// Vão curto de propósito: o degrau fica quase em cima do hospedeiro, então a
+// escada sobe reta e a silhueta lê como torre, não como rampa. Também mantém
+// `createRecoveryRoots` fora (ela exige vão >= 82 px) — uma raiz de recuperação
+// embaixo do portão seria um caminho alternativo.
+const ASCENT_GATE_GAP_RANGE = Object.freeze([44, 78]);
+const ASCENT_GATE_WIDTH_RANGE = Object.freeze([168, 214]);
+// Folga entre o topo do degrau e o teto do envelope da faixa.
+const ASCENT_GATE_CEILING_MARGIN = 60;
+
+function buildAscentGatePlatform(previous, gate, rnd, index, band) {
+  const [minimumRise, maximumRise] = gate.riseRange;
+  const ceiling = (band ? band.floorLimit : 235) + ASCENT_GATE_CEILING_MARGIN;
+  const available = previous.y - ceiling;
+  // Sem altura para o degrau, não há portão: o chunk volta a ser um chunk
+  // comum. Um portão que não sobe o bastante seria saltável — e aí a escada
+  // vira decoração.
+  if (available < minimumRise) return null;
+  const rise = Math.round(clamp(
+    lerp(minimumRise, maximumRise, rnd()),
+    minimumRise,
+    Math.min(maximumRise, available),
+  ));
+  const gap = Math.round(lerp(ASCENT_GATE_GAP_RANGE[0], ASCENT_GATE_GAP_RANGE[1], rnd()));
+  const width = Math.round(lerp(ASCENT_GATE_WIDTH_RANGE[0], ASCENT_GATE_WIDTH_RANGE[1], rnd()));
+  return {
+    x: previous.x + previous.w + gap,
+    y: previous.y - rise,
+    w: width,
+    h: 54,
+    type: 'root',
+    logicIndex: index,
+    ascentGate: true,
+    ascentGateId: `azo-ascent-${index}`,
+    ascentGateRise: rise,
+    ascentGateMechanic: gate.mechanic,
+    verticalZoneId: gate.zoneId,
+  };
+}
+
 function isForgivingChunk(chunk, index) {
   return index < 4 || chunk.isSkillIntro || chunk.allyId || chunk.isCheckpoint || chunk.difficultyTarget !== 'hard';
 }
@@ -121,17 +177,51 @@ function validated(candidate, previous, primitive, chunk, index) {
   return true;
 }
 
-function createSafeFallback(previous, chunk, primitives, rnd, index) {
+// Quanto o fallback mira a linha-alvo do plano, e o teto de cada passo. O
+// fallback usa `running-jump-short`, então uma subida acima de ~46 px seria
+// reprovada pela própria física e a tentativa se perderia.
+const FALLBACK_PLAN_PULL = 0.45;
+const FALLBACK_PLAN_MAX_RISE = 34;
+const FALLBACK_PLAN_MAX_DROP = 58;
+
+// O TERCEIRO clamp absoluto escondido do gerador — o mesmo defeito que o T3c
+// tirou da senoide de `geometry.js` e do `[220, 560]`, sobrevivendo aqui.
+//
+// `y: clamp(..., 250, 555)` teleportava para 250 qualquer rota que estivesse
+// acima disso. Como quase metade dos chunks cai neste fallback (medido: 17,6
+// de 40 por seed), era ele quem achatava a silhueta — e, com os portões
+// ligados, era pior que achatar: um degrau que subia 316 px era desfeito no
+// chunk seguinte, de volta a 250, num único passo.
+//
+// Sem plano, os limites continuam 250/555 e o resultado é byte a byte o de
+// hoje. Com plano, o fallback passa a respeitar o envelope e a mirar a faixa,
+// como qualquer outro passo.
+function createSafeFallback(previous, chunk, primitives, rnd, index, band = null) {
   const basic = primitives.find(p => p.id === 'running-jump-short')
     || primitives.find(p => p.requires.length === 0)
     || primitives[0];
+
+  const floorY = band ? band.floorLimit : 250;
+  const ceilingY = band ? band.ceilingLimit : 555;
+  // A intenção da zona vale aqui pela mesma razão que vale em
+  // `stabilizeGeometry`: um portão deixa a rota bem ACIMA da linha-alvo, e sem
+  // esta regra o fallback devolvia 58 px de altura por chunk logo depois dele.
+  const climbing = band?.verticalIntent === 'climb' || band?.verticalIntent === 'recover';
+  const descending = band?.verticalIntent === 'descend' || band?.verticalIntent === 'valley';
+  const plannedDelta = band
+    ? clamp(
+        (band.target - previous.y) * FALLBACK_PLAN_PULL,
+        descending ? -12 : -FALLBACK_PLAN_MAX_RISE,
+        climbing ? 22 : FALLBACK_PLAN_MAX_DROP,
+      )
+    : 0;
 
   const baseDelta = (rnd() - .5) * (index < 4 ? 24 : 42);
   for (let attempt = 0; attempt < 8; attempt++) {
     const gap = Math.max(28, (index < 4 ? 82 : 102) - attempt * 9);
     const candidate = {
       x: previous.x + previous.w + gap,
-      y: clamp(previous.y + baseDelta * (1 - attempt / 10), 250, 555),
+      y: clamp(previous.y + plannedDelta + baseDelta * (1 - attempt / 10), floorY, ceilingY),
       w: 185 + rnd() * 55,
       h: 48 + rnd() * 14,
       type: rnd() > .25 ? 'root' : 'soil',
@@ -323,6 +413,11 @@ export function generateLevel(seedString, {
   // a fase clássica continua idêntica à de hoje.
   let verticalPlan = null;
   let verticalPlanViolations = null;
+  // Portões de subida: só existem quando o chamador declara `ascentGates`, e o
+  // chamador só declara quando a escada de Azospirillum está liberada. Um
+  // portão sem a habilidade que o abre é um softlock, não um desafio.
+  const ascentGateRequests = new Map();
+  const ascentGates = [];
   if (verticalPlanOption) {
     const requested = verticalPlanOption === true ? {} : verticalPlanOption;
     verticalPlan = createPhaseVerticalPlan({
@@ -334,6 +429,11 @@ export function generateLevel(seedString, {
     });
     verticalPlanViolations = validatePhaseVerticalPlan(verticalPlan);
     if (verticalPlanViolations.length) verticalPlan = null;
+    if (verticalPlan && requested.ascentGates) {
+      for (const gate of plannedAscentGates(verticalPlan)) {
+        ascentGateRequests.set(gate.chunkIndex, gate);
+      }
+    }
   }
 
   let prevPlatform = { x: 50, y: 500, w: 240, h: 100, type: 'root', logicIndex: -1 };
@@ -418,6 +518,50 @@ export function generateLevel(seedString, {
     let accepted = false;
     let prim = null;
 
+    // Portão de subida: geometria autoral. Fica FORA de `stabilizeGeometry` e
+    // de `validated` — ver o comentário sobre `buildAscentGatePlatform`.
+    // A saída de um encontro de travessia nunca vira hospedeiro: alargá-la
+    // mexeria na geometria que o próprio encontro validou.
+    const gateRequest = ascentGateRequests.get(i);
+    if (gateRequest && !chunk.isSkillIntro && !chunk.allyId
+      && !prevPlatform.encounterInstanceId && prevPlatform.logicIndex >= 0) {
+      // Alarga o hospedeiro ANTES de medir o vão: a inoculação precisa de
+      // superfície, e alargar à direita não afeta o salto que chegou até aqui.
+      prevPlatform.w = Math.max(prevPlatform.w, ASCENT_GATE_HOST_MIN_WIDTH);
+      const gatePlatform = buildAscentGatePlatform(
+        prevPlatform,
+        gateRequest,
+        rnd,
+        i,
+        verticalPlan ? verticalBandAt(verticalPlan, i) : null,
+      );
+      if (gatePlatform) {
+        // `generateAzospirillumRootLadders` exige hospedeiro de raiz sólida.
+        prevPlatform.type = 'root';
+        prevPlatform.recovery = false;
+        prevPlatform.ascentGateHost = true;
+        prevPlatform.ascentGateId = gatePlatform.ascentGateId;
+        nextPlatform = gatePlatform;
+        prim = primitives.find(p => p.id === 'running-jump-short') || primitives[0];
+        accepted = true;
+        ascentGates.push({
+          id: gatePlatform.ascentGateId,
+          chunkIndex: i,
+          zoneId: gateRequest.zoneId,
+          mechanic: gateRequest.mechanic,
+          rise: gatePlatform.ascentGateRise,
+          gap: Math.round(gatePlatform.x - (prevPlatform.x + prevPlatform.w)),
+          host: prevPlatform,
+          destination: gatePlatform,
+          hostLogicIndex: prevPlatform.logicIndex,
+          destinationLogicIndex: i,
+        });
+      }
+    }
+
+    // `accepted` já é true quando o portão foi construído — não repetir a
+    // condição com `!nextPlatform`, que é reavaliada a cada volta e encerraria
+    // o laço na PRIMEIRA tentativa, matando as 12 repetições.
     while (attempts < 12 && !accepted) {
       prim = validPrims[Math.floor(rnd() * validPrims.length)];
       const plannedBand = verticalPlan ? verticalBandAt(verticalPlan, i) : null;
@@ -430,7 +574,10 @@ export function generateLevel(seedString, {
     }
 
     if (!accepted) {
-      const fallback = createSafeFallback(prevPlatform, chunk, primitives, rnd, i);
+      const fallback = createSafeFallback(
+        prevPlatform, chunk, primitives, rnd, i,
+        verticalPlan ? verticalBandAt(verticalPlan, i) : null,
+      );
       nextPlatform = fallback.platform;
       prim = fallback.primitive;
       accepted = true;
@@ -577,6 +724,7 @@ export function generateLevel(seedString, {
     verticalPlan,
     verticalPlanViolations,
     verticalPlanRequested: Boolean(verticalPlanOption),
+    ascentGates,
     primitives,
     endX,
     cameraMaxX: Math.max(0, endX - 1000),
@@ -698,6 +846,23 @@ function buildDebugSafetyStep(prev, next, prims, logicIndex) {
 //   - blocos autorais (fase 1, tutoriais das fases 5 e 6);
 //   - estruturas que só surgem depois de uma ação biológica.
 export function isIntentionalDynamicCrossing(level, previous, next) {
+  // Portão de subida da silhueta, PRIMEIRO de todos: o degrau está 240 a 330 px
+  // acima do hospedeiro porque a rota PEDIU essa altura. Só a escada de
+  // Azospirillum a vence, e é por isso que ele não é falha de travessia.
+  //
+  // A ordem importa. Depois de a escada nascer, o hospedeiro ganha
+  // `azospirillumLadderHost` e `isThemedCrossing` passa a casar antes,
+  // devolvendo `themedCrossing` — verdadeiro, mas genérico demais para quem
+  // depura a silhueta.
+  if (next.ascentGate && previous.ascentGateHost
+    && previous.ascentGateId === next.ascentGateId) {
+    return {
+      mechanic: 'azospirillumAscentGate',
+      expectedBlockedUntilDeveloped: true,
+      ascentGateId: next.ascentGateId,
+      ascentGateRise: next.ascentGateRise,
+    };
+  }
   if (isThemedCrossing(previous, next)) {
     return { mechanic: 'themedCrossing', expectedBlockedUntilDeveloped: false };
   }

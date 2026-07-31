@@ -281,12 +281,17 @@ export function generateAzospirillumRootLadders({
   };
   const authoredRandom = createRandom(`${seedValue}:authored-azospirillum-root-ladder:p${phase}`);
   for (const [requestIndex, request] of authoredRequests.entries()) {
-    const host = (level.platforms || []).find(platform => (
+    // A rota opcional identifica hospedeiro e destino por `platformId`; os
+    // portões de subida da rota principal nascem em `generateLevel`, antes de
+    // qualquer id ser atribuído, e passam a própria referência. O pipeline
+    // muta o nível no lugar, então a referência sobrevive à decoração.
+    const host = request.hostPlatform || (level.platforms || []).find(platform => (
       (platform.platformId ?? platform.id) === request.hostPlatformId
     ));
-    const destination = (level.platforms || []).find(platform => (
-      (platform.platformId ?? platform.id) === request.destinationPlatformId
-    ));
+    const destination = request.destinationPlatform
+      || (level.platforms || []).find(platform => (
+        (platform.platformId ?? platform.id) === request.destinationPlatformId
+      ));
     if (!host || !destination || host.type !== 'root' || destination.y >= host.y - 60) continue;
     const requiredReach = Math.max(
       Number(request.requiredReach) || 0,
@@ -346,6 +351,7 @@ export function generateAzospirillumRootLadders({
       optionalDetourId: request.optionalDetourId || null,
       detourModuleId: request.detourModuleId || null,
       accessStyle: request.accessStyle || null,
+      ascentGateId: request.ascentGateId || null,
       requiredReach,
       fullPathLength: dynamicGeometry?.totalLength ?? requiredReach,
       pathPoints: dynamicGeometry?.points || null,

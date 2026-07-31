@@ -248,14 +248,13 @@ export function validatePhaseVerticalPlan(plan) {
 // da escada já sabe construir e o jogador já sabe usar.
 export const AZO_ASCENT_RISE_RANGE = Object.freeze([240, 330]);
 
+// Chunk mínimo para um portão. Abaixo de 4 o gerador ainda está no regime
+// "forgiving" (maxRise 28) e o trecho serve de aquecimento — pôr uma escada ali
+// tranca o jogador antes de ele ter checkpoint.
+export const ASCENT_GATE_MINIMUM_CHUNK = 4;
+
 /**
- * Chunks em que a subida deixaria de ser saltável e passaria a exigir escada.
- *
- * AINDA NÃO LIGADO ao gerador. A tentativa de fiar isto elevava a plataforma de
- * destino e algo a reescrevia depois — o degrau saía 19 px ABAIXO do hospedeiro
- * em vez de 250 acima, e o pedido de escada apontava para uma geometria que não
- * existia. Fica aqui porque as faixas são medidas e valem: é o ponto de partida
- * de quem retomar.
+ * Chunks em que a subida deixa de ser saltável e passa a exigir escada.
  *
  * É aqui que a verticalidade real nasce. `traversalLimits` deixa cada passo
  * subir 46 a 92 px — teto do salto duplo, e não dá para elevá-lo sem tornar a
@@ -266,6 +265,22 @@ export const AZO_ASCENT_RISE_RANGE = Object.freeze([240, 330]);
  * fazem 700 a 1000 px — isso cabe na tela e se lê como torre. O runtime já
  * existe; o que faltava era a rota PEDIR, em vez de a escada procurar onde
  * encaixar depois (foi por isso que ela parecia aparecer por acaso).
+ *
+ * POR QUE AS DUAS PRIMEIRAS TENTATIVAS FALHARAM. O degrau saía 19 px ABAIXO do
+ * hospedeiro em vez de 250 acima, e a hipótese de ids colididos não explicava
+ * nada. A causa era o próprio pipeline do chunk, em dois pontos:
+ *
+ *   1. `stabilizeGeometry` fecha com
+ *      `candidate.y = previous.y + clamp(dy, -limits.maxRise, limits.maxDrop)`.
+ *      Uma subida de 250 px vira 92 px — o teto do salto duplo — sem aviso.
+ *   2. o que sobra é submetido a `validated()`, que reprova; depois de 12
+ *      tentativas `createSafeFallback` DESCARTA o candidato e devolve uma
+ *      plataforma nova a `previous.y ± 42`. Daí os 19 px para baixo.
+ *
+ * Ou seja: não havia nada a consertar no plano. Um portão não pode passar por
+ * `stabilizeGeometry`/`validated` — ele é geometria autoral, como os encontros
+ * de travessia, e o gerador precisa de um ramo próprio que o construa e siga
+ * adiante. É o que `generateLevel` faz agora.
  */
 export function plannedAscentGates(plan, { minimumZoneRise = 300 } = {}) {
   if (!plan) return [];
@@ -279,7 +294,7 @@ export function plannedAscentGates(plan, { minimumZoneRise = 300 } = {}) {
       const at = zone.fromChunk + Math.round(
         ((index + 1) / (count + 1)) * (zone.toChunk - zone.fromChunk),
       );
-      if (at <= 0 || at >= plan.totalChunks - 1) continue;
+      if (at < ASCENT_GATE_MINIMUM_CHUNK || at >= plan.totalChunks - 1) continue;
       if (gates.some(gate => Math.abs(gate.chunkIndex - at) < 3)) continue;
       gates.push({
         chunkIndex: at,
