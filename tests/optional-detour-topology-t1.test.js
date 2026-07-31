@@ -29,6 +29,12 @@ import {
 } from '../src/procgen/optional-detour-challenge-constraints.js';
 import { canTraverseEdge } from '../src/procgen/traversal-edge-physics.js';
 import { OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE } from '../src/procgen/optional-detour-planner.js';
+import { composeOptionalDetourTopologyT1 } from '../src/procgen/optional-detour-topology-synthesizer.js';
+import {
+  MINIMUM_ZONES_BETWEEN_CHALLENGES,
+  selectTopologyChallengePlans,
+  T2_DIFFICULTY_BUDGET,
+} from '../src/procgen/optional-detour-challenge-constraints.js';
 import { readFileSync } from 'node:fs';
 
 const ABILITIES = Object.freeze([
@@ -260,29 +266,34 @@ test('T1 - SILHUETA: a saída por queda continua válida e a rota principal inta
 });
 
 test('T1 - FOSFATO: depósito bloqueado, Bacillus antes e sem passagem alternativa', () => {
-  const phosphateRoutes = ROUTES.filter(entry => entry.detour.challengeId === 'phosphate');
-  assert.ok(phosphateRoutes.length >= 2, 'menos de duas rotas com fosfato');
-  for (const { seed, level, detour } of phosphateRoutes) {
-    const deposit = (level.phosphateDeposits || []).find(candidate => (
+  const gates = ROUTES.flatMap(entry => entry.detour.challenges
+    .filter(challenge => challenge.id === 'phosphate')
+    .map(challenge => ({ ...entry, challenge })));
+  assert.ok(gates.length >= 2, `apenas ${gates.length} gate(s) de fosfato`);
+  for (const { seed, level, detour, challenge } of gates) {
+    const deposits = (level.phosphateDeposits || []).filter(candidate => (
       candidate.optionalDetourId === detour.id
+      && candidate.hostPlatformId === challenge.approachPlatformId
     ));
-    assert.ok(deposit, `${seed}: depósito não materializado`);
+    assert.equal(deposits.length, 1, `${seed}: ${deposits.length} depósitos no gate`);
+    const deposit = deposits[0];
     assert.equal(deposit.broken, false, `${seed}: depósito nasce aberto`);
     assert.ok(Number(deposit.remainingPhosphate) > 0, `${seed}: depósito sem fosfato`);
     assert.equal(deposit.requiredFeature, 'phosphateSolubilization');
 
     const colony = (level.authoredBeneficialColonies || []).find(candidate => (
-      candidate.optionalDetourId === detour.id && candidate.type === 'bacillus'
+      candidate.optionalDetourId === detour.id
+      && candidate.type === 'bacillus'
+      && candidate.platformId === challenge.approachPlatformId
     ));
-    assert.ok(colony, `${seed}: Bacillus ausente`);
+    assert.ok(colony, `${seed}: Bacillus ausente no gate`);
     assert.ok(colony.x < deposit.x, `${seed}: Bacillus depois do depósito`);
 
     // Nenhuma plataforma atravessa o bloco nem passa por cima dele.
-    const bypass = detour.topologyOverlay.depositBounds;
-    const approachId = detour.phosphateApproachPlatformId;
-    const targetId = detour.phosphateTargetPlatformId;
+    const bypass = challenge.depositBounds;
     for (const platform of detourPlatforms(level, detour)) {
-      if (platform.platformId === approachId || platform.platformId === targetId) continue;
+      if (platform.platformId === challenge.approachPlatformId) continue;
+      if (platform.platformId === challenge.targetPlatformId) continue;
       assert.ok(
         !insideBounds(platform, bypass),
         `${seed}: ${platform.platformId} atravessa o depósito`,
@@ -298,13 +309,19 @@ test('T1 - FOSFATO: depósito bloqueado, Bacillus antes e sem passagem alternati
 });
 
 test('T1 - MICORRIZA: origem, destino, vão bloqueado, vazio e ponte possível', () => {
-  const mycorrhizaRoutes = ROUTES.filter(entry => entry.detour.challengeId === 'mycorrhiza');
-  assert.ok(mycorrhizaRoutes.length >= 2, 'menos de duas rotas com micorriza');
+  const gates = ROUTES.flatMap(entry => entry.detour.challenges
+    .filter(challenge => challenge.id === 'mycorrhiza')
+    .map(challenge => ({ ...entry, challenge })));
+  assert.ok(gates.length >= 2, `apenas ${gates.length} gate(s) de micorriza`);
   const deltas = new Set();
-  for (const { seed, level, detour } of mycorrhizaRoutes) {
+  for (const { seed, level, detour, challenge } of gates) {
     const platforms = detourPlatforms(level, detour);
-    const source = platforms.find(platform => platform.mycorrhizaBridgeSource);
-    const target = platforms.find(platform => platform.mycorrhizaBridgeTarget);
+    const source = platforms.find(platform => (
+      platform.platformId === challenge.sourcePlatformId
+    ));
+    const target = platforms.find(platform => (
+      platform.platformId === challenge.targetPlatformId
+    ));
     assert.ok(source && target, `${seed}: origem/destino ausentes`);
     assert.equal(source.type, 'root');
     assert.equal(target.type, 'root');
@@ -329,11 +346,10 @@ test('T1 - MICORRIZA: origem, destino, vão bloqueado, vazio e ponte possível',
     deltas.add(verticalDelta);
 
     // Vão vazio e nenhuma ponte pronta na geração.
-    const gapBounds = detour.topologyOverlay.gapBounds;
     for (const platform of platforms) {
       if (platform === source || platform === target) continue;
       assert.ok(
-        !insideBounds(platform, gapBounds),
+        !insideBounds(platform, challenge.gapBounds),
         `${seed}: ${platform.platformId} dentro do vão`,
       );
     }
@@ -417,8 +433,14 @@ test('T1 - GRAFO: nós e arestas existem antes da geometria e descrevem o bloque
       assert.ok(node.xRange[1] >= node.xRange[0]);
     }
     const blocked = graph.edges.filter(edge => edge.blockedUntil);
-    assert.equal(blocked.length, 1, `${seed}: esperava exatamente uma aresta bloqueada`);
-    assert.ok(blocked[0].forbiddenConnector, `${seed}: aresta bloqueada aceita conector`);
+    assert.equal(
+      blocked.length,
+      detour.challengeCount,
+      `${seed}: ${blocked.length} arestas bloqueadas para ${detour.challengeCount} desafios`,
+    );
+    for (const edge of blocked) {
+      assert.ok(edge.forbiddenConnector, `${seed}: aresta bloqueada aceita conector`);
+    }
     const rejoin = graph.edges.find(edge => edge.role === 'drop-rejoin');
     assert.ok(rejoin, `${seed}: grafo sem saída por queda`);
   }
@@ -591,4 +613,179 @@ test('T1 - ASSINATURA: as métricas da queda e da separação entram na assinatu
       seed,
     );
   }
+});
+
+test('T2 - COMPOSIÇÃO: a mesma rota hospeda fosfato e micorriza juntos', () => {
+  const shapes = new Map();
+  for (const { detour } of ROUTES) {
+    const shape = [...detour.challengeIds].sort().join('+');
+    shapes.set(shape, (shapes.get(shape) || 0) + 1);
+  }
+  const pairs = ROUTES.filter(entry => entry.detour.challengeCount === 2);
+  assert.ok(
+    pairs.length >= 2,
+    `apenas ${pairs.length} rota(s) com dois desafios: ${[...shapes]}`,
+  );
+  for (const { seed, detour } of pairs) {
+    // Exatamente um de cada: dois fosfatos na mesma rota seriam repetição, não
+    // composição.
+    const unique = new Set(detour.challengeIds);
+    assert.equal(unique.size, 2, `${seed}: desafios repetidos`);
+    assert.equal(detour.challengeDifficulty, 4, `${seed}: orçamento fora de 4`);
+    assert.ok(
+      detour.challengeDifficulty <= T2_DIFFICULTY_BUDGET,
+      `${seed}: orçamento estourado`,
+    );
+
+    // Zonas separadas por pelo menos uma zona de permeio.
+    const orders = detour.challengeZoneIds.map(zoneId => (
+      detour.zoneResults.findIndex(zone => zone.zoneId === zoneId)
+    ));
+    assert.ok(
+      Math.abs(orders[0] - orders[1]) - 1 >= MINIMUM_ZONES_BETWEEN_CHALLENGES,
+      `${seed}: desafios em zonas vizinhas`,
+    );
+  }
+  // Rotas com um desafio só continuam existindo: quando o vão não comporta
+  // dois, uma bifurcação simples é o resultado certo, não uma falha.
+  assert.ok(
+    ROUTES.some(entry => entry.detour.challengeCount === 1),
+    'nenhuma rota com um desafio só',
+  );
+});
+
+test('T2 - COMPOSIÇÃO: cada desafio da rota é materializado por inteiro', () => {
+  for (const { seed, level, detour } of ROUTES) {
+    const phosphateGates = detour.challengeIds.filter(id => id === 'phosphate').length;
+    const mycorrhizaGates = detour.challengeIds.filter(id => id === 'mycorrhiza').length;
+
+    const deposits = (level.phosphateDeposits || []).filter(deposit => (
+      deposit.optionalDetourId === detour.id
+    ));
+    assert.equal(deposits.length, phosphateGates, `${seed}: depósitos != gates`);
+    for (const deposit of deposits) {
+      assert.equal(deposit.broken, false, `${seed}: depósito nasce aberto`);
+    }
+
+    const sources = detourPlatforms(level, detour)
+      .filter(platform => platform.mycorrhizaBridgeSource);
+    const targets = detourPlatforms(level, detour)
+      .filter(platform => platform.mycorrhizaBridgeTarget);
+    assert.equal(sources.length, mycorrhizaGates, `${seed}: origens != gates`);
+    assert.equal(targets.length, mycorrhizaGates, `${seed}: destinos != gates`);
+    for (const source of sources) {
+      assert.equal(source.strictPreferredMycorrhizaTarget, true, seed);
+      assert.ok(
+        targets.some(target => target.platformId === source.preferredMycorrhizaTargetId),
+        `${seed}: origem sem destino registrado`,
+      );
+    }
+
+    // Uma aresta bloqueada por desafio, nem mais nem menos.
+    const blocked = detour.edges.filter(edge => edge.blockedUntil);
+    assert.equal(
+      blocked.length,
+      detour.challengeCount,
+      `${seed}: ${blocked.length} arestas bloqueadas para ${detour.challengeCount} desafios`,
+    );
+  }
+});
+
+test('T2 - COMPOSIÇÃO: um desafio não invade a região reservada do outro', () => {
+  for (const { seed, level, detour } of ROUTES) {
+    if (detour.challengeCount < 2) continue;
+    const owned = new Set(detour.challenges.flatMap(challenge => [
+      challenge.approachPlatformId,
+      challenge.sourcePlatformId,
+      challenge.targetPlatformId,
+    ].filter(Boolean)));
+    const regions = detour.challenges.flatMap(challenge => [
+      challenge.depositBounds,
+      challenge.gapBounds,
+    ].filter(Boolean));
+    for (const platform of detourPlatforms(level, detour)) {
+      if (owned.has(platform.platformId)) continue;
+      for (const bounds of regions) {
+        assert.ok(
+          !insideBounds(platform, bounds),
+          `${seed}: ${platform.platformId} dentro de região reservada`,
+        );
+      }
+    }
+  }
+});
+
+test('T2 - a regra do T1 continua exercitável: maximumChallenges 1 nunca compõe', () => {
+  let singleRoutes = 0;
+  for (const seed of MATRIX_SEEDS.slice(0, 12)) {
+    const level = phaseTenGeometry(seed);
+    const collected = composeOptionalDetourTopologyT1({
+      level,
+      candidates: [],
+      seedValue: seed,
+      abilities: ABILITIES,
+      maximumChallenges: 1,
+    });
+    assert.equal(collected.success, false, 'sem candidatos não deveria compor');
+  }
+  for (const seed of MATRIX_SEEDS) {
+    const level = phaseTenGeometry(seed);
+    const detour = createPhaseTenTopologyDetour({
+      level,
+      phase: 10,
+      seedValue: seed,
+      abilities: ABILITIES,
+      maximumChallenges: 1,
+    });
+    if (!detour) continue;
+    singleRoutes++;
+    assert.equal(detour.challengeCount, 1, `${seed}: compôs com limite 1`);
+  }
+  assert.ok(singleRoutes > 0, 'o modo de um desafio deixou de produzir rotas');
+});
+
+test('T2 - SELEÇÃO: pares vêm antes de planos simples e respeitam o orçamento', () => {
+  const topology = generateOptionalDetourTopology({
+    candidate: { id: 'c' },
+    seedValue: 'plano-t2',
+    familyId: 'ridge-valley',
+  });
+  const zoneSpans = Object.fromEntries(
+    topology.zones.map(zone => [zone.id, 2000]),
+  );
+  const selection = selectTopologyChallengePlans({
+    topology,
+    abilities: ABILITIES,
+    organisms: ['bacillus', 'myco'],
+    seedValue: 'plano-t2',
+    candidateId: 'c',
+    zoneSpans,
+  });
+  assert.ok(selection.plans.length > 0, 'nenhum plano');
+  assert.ok(selection.pairCount > 0, 'nenhum par possível com zonas folgadas');
+  assert.equal(selection.plans[0].length, 2, 'o primeiro plano não é um par');
+  for (const plan of selection.plans) {
+    const cost = plan.reduce((sum, entry) => sum + entry.difficultyCost, 0);
+    assert.ok(cost <= T2_DIFFICULTY_BUDGET, `plano custa ${cost}`);
+    if (plan.length === 2) {
+      assert.notEqual(plan[0].challengeId, plan[1].challengeId);
+      assert.ok(
+        Math.abs(plan[0].zoneOrder - plan[1].zoneOrder) - 1
+          >= MINIMUM_ZONES_BETWEEN_CHALLENGES,
+      );
+    }
+  }
+  // Determinismo do plano.
+  const twin = selectTopologyChallengePlans({
+    topology,
+    abilities: ABILITIES,
+    organisms: ['bacillus', 'myco'],
+    seedValue: 'plano-t2',
+    candidateId: 'c',
+    zoneSpans,
+  });
+  assert.deepEqual(
+    twin.plans.map(plan => plan.map(entry => `${entry.challengeId}@${entry.zoneId}`)),
+    selection.plans.map(plan => plan.map(entry => `${entry.challengeId}@${entry.zoneId}`)),
+  );
 });

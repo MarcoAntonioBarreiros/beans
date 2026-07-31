@@ -27,7 +27,7 @@ import {
   buildOptionalDetourTopologyGraph,
   MYCORRHIZA_RUNTIME_MINIMUM_GAP,
   MYCORRHIZA_RUNTIME_VERTICAL_LIMIT,
-  selectTopologyChallenge,
+  selectTopologyChallengePlans,
 } from './optional-detour-challenge-constraints.js';
 import {
   allocateTopologyZoneSpans,
@@ -1078,8 +1078,7 @@ function validateSynthesis({
   platforms,
   edges,
   metrics,
-  challengeResult,
-  challengeId,
+  challengeResults,
   span,
   accessValid,
   dropRejoin,
@@ -1137,50 +1136,59 @@ function validateSynthesis({
     failures.push(`artificialRowCoversSpan:${Math.round(coverage * 100)}`);
   }
 
-  const forbidden = challengeResult.forbiddenBounds || [];
+  // Cada desafio é validado por si, e as regiões proibidas de TODOS eles valem
+  // para a rota inteira. Com dois desafios na mesma rota, o erro que se quer
+  // pegar aqui é o segundo desafio invadir a região reservada do primeiro.
+  const allForbidden = challengeResults.flatMap(entry => entry.result.forbiddenBounds || []);
+  const challengeOwnedIds = new Set(challengeResults.flatMap(entry => [
+    entry.result.approachPlatformId,
+    entry.result.targetPlatformId,
+    entry.result.sourcePlatformId,
+  ].filter(Boolean)));
   const invaders = platforms.filter(platform => (
-    platform.platformId !== challengeResult.approachPlatformId
-    && platform.platformId !== challengeResult.targetPlatformId
-    && platform.platformId !== challengeResult.sourcePlatformId
-    && forbidden.some(bounds => insideBounds(platform, bounds, 0))
+    !challengeOwnedIds.has(platform.platformId)
+    && allForbidden.some(bounds => insideBounds(platform, bounds, 0))
   ));
   if (invaders.length) failures.push('platformInsideForbiddenBounds');
 
-  if (challengeId === 'phosphate') {
-    const crossing = platforms.filter(platform => (
-      insideBounds(platform, challengeResult.depositBounds, 0)
-    ));
-    if (crossing.length) failures.push('platformCrossesDeposit');
-    const hasDeposit = challengeResult.contentRequests.some(request => (
-      request.type === 'phosphate-deposit'
-    ));
-    const hasBacillus = challengeResult.contentRequests.some(request => (
-      request.type === 'authored-beneficial-colony' && request.organism === 'bacillus'
-    ));
-    if (!hasDeposit) failures.push('missingPhosphateDeposit');
-    if (!hasBacillus) failures.push('missingBacillus');
-    if (!challengeResult.blockedEdge?.blockedUntil) failures.push('gateNotBlocked');
-  }
+  for (const { assignment, result } of challengeResults) {
+    const label = `${assignment.challengeId}@${assignment.zoneId}`;
+    if (assignment.challengeId === 'phosphate') {
+      const crossing = platforms.filter(platform => (
+        insideBounds(platform, result.depositBounds, 0)
+      ));
+      if (crossing.length) failures.push(`platformCrossesDeposit:${label}`);
+      const hasDeposit = result.contentRequests.some(request => (
+        request.type === 'phosphate-deposit'
+      ));
+      const hasBacillus = result.contentRequests.some(request => (
+        request.type === 'authored-beneficial-colony' && request.organism === 'bacillus'
+      ));
+      if (!hasDeposit) failures.push(`missingPhosphateDeposit:${label}`);
+      if (!hasBacillus) failures.push(`missingBacillus:${label}`);
+      if (!result.blockedEdge?.blockedUntil) failures.push(`gateNotBlocked:${label}`);
+    }
 
-  if (challengeId === 'mycorrhiza') {
-    const inside = platforms.filter(platform => (
-      insideBounds(platform, challengeResult.gapBounds, 0)
-    ));
-    if (inside.length) failures.push('platformInsideMycorrhizaGap');
-    if (challengeResult.blockedEdge?.regularTraversalBlocked !== true) {
-      failures.push('regularTraversalNotBlocked');
-    }
-    if (!challengeResult.metrics.runtimeBridgeReachable) {
-      failures.push('bridgeNotReachableByRuntime');
-    }
-    const exudates = challengeResult.contentRequests.filter(request => (
-      request.type === 'exudate'
-    ));
-    if (exudates.length < 2) failures.push('insufficientExudatesBeforeGap');
-    if (!challengeResult.contentRequests.some(request => (
-      request.type === 'authored-roaming-beneficial' && request.organism === 'myco'
-    ))) {
-      failures.push('missingMycoBeforeSource');
+    if (assignment.challengeId === 'mycorrhiza') {
+      const inside = platforms.filter(platform => (
+        insideBounds(platform, result.gapBounds, 0)
+      ));
+      if (inside.length) failures.push(`platformInsideMycorrhizaGap:${label}`);
+      if (result.blockedEdge?.regularTraversalBlocked !== true) {
+        failures.push(`regularTraversalNotBlocked:${label}`);
+      }
+      if (!result.metrics.runtimeBridgeReachable) {
+        failures.push(`bridgeNotReachableByRuntime:${label}`);
+      }
+      const exudates = result.contentRequests.filter(request => (
+        request.type === 'exudate'
+      ));
+      if (exudates.length < 2) failures.push(`insufficientExudatesBeforeGap:${label}`);
+      if (!result.contentRequests.some(request => (
+        request.type === 'authored-roaming-beneficial' && request.organism === 'myco'
+      ))) {
+        failures.push(`missingMycoBeforeSource:${label}`);
+      }
     }
   }
 
@@ -1208,7 +1216,8 @@ export function synthesizeOptionalDetourTopology({
   level,
   candidate,
   topology,
-  challengeAssignment,
+  challengeAssignment = null,
+  challengeAssignments = null,
   constraints = null,
   abilities = [],
   seedValue = '',
@@ -1217,10 +1226,19 @@ export function synthesizeOptionalDetourTopology({
   attemptIndex = 0,
 } = {}) {
   const failureReasons = [];
-  if (!level || !candidate || !topology || !challengeAssignment) {
+  // Um desafio ou dois: a partir daqui é sempre uma lista. Manter dois caminhos
+  // — um para o caso simples e outro para o composto — é o tipo de bifurcação
+  // que diverge com o tempo e deixa o caso raro sem validação.
+  const assignments = (challengeAssignments && challengeAssignments.length)
+    ? [...challengeAssignments].sort((left, right) => left.zoneOrder - right.zoneOrder)
+    : (challengeAssignment ? [challengeAssignment] : []);
+  if (!level || !candidate || !topology || !assignments.length) {
     return { success: false, failureReasons: ['missing-synthesis-input'] };
   }
-  const activeConstraints = constraints || challengeAssignment.constraints;
+  const assignmentByZoneId = new Map(
+    assignments.map(entry => [entry.zoneId, entry]),
+  );
+  const primaryAssignment = assignments[0];
   const detourPlan = plan || candidate;
   const rejoinPlatform = detourPlan.rejoinPlatform;
   if (!accessPlatform || !rejoinPlatform) {
@@ -1229,7 +1247,8 @@ export function synthesizeOptionalDetourTopology({
 
   const random = createRandom(
     `${seedValue}:t1-synthesis:${candidate.id}:${topology.id}`
-    + `:${challengeAssignment.challengeId}:${challengeAssignment.zoneId}:${attemptIndex}`,
+    + `:${assignments.map(entry => `${entry.challengeId}@${entry.zoneId}`).join('+')}`
+    + `:${attemptIndex}`,
   );
 
   const context = {
@@ -1260,7 +1279,8 @@ export function synthesizeOptionalDetourTopology({
   const graph = buildOptionalDetourTopologyGraph({
     topology,
     zoneSpans,
-    challengeAssignment,
+    challengeAssignment: primaryAssignment,
+    challengeAssignments: assignments,
     entryAnchor: accessPlatform,
     startX: centralStartX,
     startY: accessPlatform.y,
@@ -1295,6 +1315,7 @@ export function synthesizeOptionalDetourTopology({
   let order = 100;
   let cursorX = centralStartX;
   let challengeResult = null;
+  const challengeResults = [];
 
   // As fronteiras de zona são RECALCULADAS a cada zona a partir do que sobrou de
   // verdade. Fixá-las de antemão parecia mais simples, mas um passo que estoura
@@ -1333,7 +1354,8 @@ export function synthesizeOptionalDetourTopology({
 
   for (let index = 0; index < topology.zones.length; index++) {
     const zone = topology.zones[index];
-    const isChallengeZone = zone.id === challengeAssignment.zoneId;
+    const zoneAssignment = assignmentByZoneId.get(zone.id) || null;
+    const isChallengeZone = Boolean(zoneAssignment);
     const cursorRight = index === 0
       ? cursorX
       : cursorPlatform.x + cursorPlatform.w;
@@ -1371,7 +1393,7 @@ export function synthesizeOptionalDetourTopology({
         .slice(index + 1)
         .filter(next => next.role !== 'drop-rejoin')
         .reduce((sum, next) => sum + next.minimumSpan, 0);
-      const required = (activeConstraints?.minimumZoneSpan || 0) + 160;
+      const required = (zoneAssignment?.constraints?.minimumZoneSpan || 0) + 160;
       // A margem de 220 px é a dívida que um passo pode contrair ao arredondar
       // para a faixa da receita. Sem ela a cauda ficava exatamente nos mínimos
       // e a primeira sobra estourava a última zona.
@@ -1392,9 +1414,9 @@ export function synthesizeOptionalDetourTopology({
       corridor,
     };
     let result;
-    if (isChallengeZone && challengeAssignment.challengeId === 'phosphate') {
+    if (isChallengeZone && zoneAssignment.challengeId === 'phosphate') {
       result = synthesizePhosphateZone(shared);
-    } else if (isChallengeZone && challengeAssignment.challengeId === 'mycorrhiza') {
+    } else if (isChallengeZone && zoneAssignment.challengeId === 'mycorrhiza') {
       result = synthesizeMycorrhizaZone(shared);
     } else {
       result = synthesizeMovementZone(shared);
@@ -1420,17 +1442,26 @@ export function synthesizeOptionalDetourTopology({
       span: Math.round(span),
       platformCount: result.platforms.length,
       exitPlatformId: result.exitPlatform.platformId,
-      challengeId: isChallengeZone ? challengeAssignment.challengeId : null,
+      challengeId: isChallengeZone ? zoneAssignment.challengeId : null,
       targetDelta: result.targetDelta ?? null,
       realizedDelta: result.realizedDelta ?? null,
     });
-    if (isChallengeZone) challengeResult = result;
+    if (isChallengeZone) {
+      challengeResult = result;
+      challengeResults.push({ assignment: zoneAssignment, result });
+    }
     order += 40;
     cursorPlatform = result.exitPlatform;
   }
 
-  if (!challengeResult) {
-    return { success: false, failureReasons: ['challenge-zone-not-synthesized'], graph };
+  if (challengeResults.length !== assignments.length) {
+    return {
+      success: false,
+      failureReasons: [
+        `challenge-zones-not-synthesized:${challengeResults.length}/${assignments.length}`,
+      ],
+      graph,
+    };
   }
   if (cursorPlatform.x + cursorPlatform.w > concreteEndX + 120) {
     return {
@@ -1493,8 +1524,7 @@ export function synthesizeOptionalDetourTopology({
     platforms,
     edges,
     metrics,
-    challengeResult,
-    challengeId: challengeAssignment.challengeId,
+    challengeResults,
     span: availableSpan,
     accessValid,
     dropRejoin,
@@ -1509,7 +1539,9 @@ export function synthesizeOptionalDetourTopology({
     top: Math.min(
       accessPlatform.y,
       ...platforms.map(platform => platform.y),
-      ...(challengeResult.depositBounds ? [challengeResult.depositBounds.top] : []),
+      ...challengeResults
+        .map(entry => entry.result.depositBounds?.top)
+        .filter(Number.isFinite),
     ),
     bottom: Math.max(
       accessPlatform.y + accessPlatform.h,
@@ -1522,11 +1554,23 @@ export function synthesizeOptionalDetourTopology({
     topologyFamily: topology.family,
     zoneRoles: topology.zones.map(zone => zone.role),
     zoneVerticalIntents: topology.zones.map(zone => zone.verticalIntent),
-    challengeId: challengeAssignment.challengeId,
-    challengeZoneId: challengeAssignment.zoneId,
+    // Campos no singular preservados: descrevem o PRIMEIRO desafio da rota e
+    // mantêm comparáveis as assinaturas de rotas com um desafio só.
+    challengeId: primaryAssignment.challengeId,
+    challengeZoneId: primaryAssignment.zoneId,
     challengePositionClass: topologyChallengePositionClass(
       topology,
-      challengeAssignment.zoneId,
+      primaryAssignment.zoneId,
+    ),
+    challengeCount: assignments.length,
+    challengeIds: assignments.map(entry => entry.challengeId),
+    challengeZoneIds: assignments.map(entry => entry.zoneId),
+    challengePositionClasses: assignments.map(entry => (
+      topologyChallengePositionClass(topology, entry.zoneId)
+    )),
+    challengeDifficulty: assignments.reduce(
+      (sum, entry) => sum + entry.difficultyCost,
+      0,
     ),
     platformCountPerZone: zoneResults.map(zoneResult => zoneResult.platformCount),
     ySequence: metrics.ySequence,
@@ -1577,10 +1621,10 @@ export function synthesizeOptionalDetourTopology({
     validation,
     metrics,
     challenge: {
-      id: challengeAssignment.challengeId,
-      zoneId: challengeAssignment.zoneId,
+      id: primaryAssignment.challengeId,
+      zoneId: primaryAssignment.zoneId,
       positionClass: structuralSignature.challengePositionClass,
-      constraints: activeConstraints,
+      constraints: constraints || primaryAssignment.constraints,
       approachPlatformId: challengeResult.approachPlatformId || null,
       sourcePlatformId: challengeResult.sourcePlatformId || null,
       targetPlatformId: challengeResult.targetPlatformId || null,
@@ -1590,6 +1634,20 @@ export function synthesizeOptionalDetourTopology({
       blockedEdge: challengeResult.blockedEdge || null,
       metrics: challengeResult.metrics || {},
     },
+    challenges: challengeResults.map(({ assignment, result }) => ({
+      id: assignment.challengeId,
+      zoneId: assignment.zoneId,
+      positionClass: topologyChallengePositionClass(topology, assignment.zoneId),
+      constraints: assignment.constraints,
+      approachPlatformId: result.approachPlatformId || null,
+      sourcePlatformId: result.sourcePlatformId || null,
+      targetPlatformId: result.targetPlatformId || null,
+      carrierPlatformId: result.carrierPlatformId || null,
+      depositBounds: result.depositBounds || null,
+      gapBounds: result.gapBounds || null,
+      blockedEdge: result.blockedEdge || null,
+      metrics: result.metrics || {},
+    })),
     centralStartX,
     centralEndX,
     availableSpan,
@@ -1646,6 +1704,12 @@ function planFromCandidate(level, candidate, seedValue) {
   };
 }
 
+function planLabel(assignmentPlan) {
+  return assignmentPlan
+    .map(entry => `${entry.challengeId}@${entry.zoneId}`)
+    .join('+');
+}
+
 function organismsFromAbilities(abilities) {
   const available = new Set(abilities);
   const organisms = ['azospirillum'];
@@ -1660,6 +1724,10 @@ export function composeOptionalDetourTopologyT1({
   seedValue = '',
   abilities = [],
   organisms = null,
+  // Quantos desafios biológicos a rota pode hospedar. 1 é o T1; 2 é o T2. O
+  // parâmetro existe para que a regra do T1 continue exercitável por teste em
+  // vez de virar história — a arquitetura tem de sustentar as duas.
+  maximumChallenges = 2,
 } = {}) {
   const attempts = [];
   const attemptedCandidateIds = [];
@@ -1733,7 +1801,7 @@ export function composeOptionalDetourTopologyT1({
         continue;
       }
 
-      const selection = selectTopologyChallenge({
+      const selection = selectTopologyChallengePlans({
         topology,
         abilities,
         organisms: activeOrganisms,
@@ -1743,26 +1811,29 @@ export function composeOptionalDetourTopologyT1({
           (allocateTopologyZoneSpans(topology, estimatedSpan) || [])
             .map(entry => [entry.zoneId, entry.span]),
         ),
+        maximumChallenges,
       });
-      if (!selection.assignments.length) {
+      if (!selection.plans.length) {
         candidateAttempt.failureReasons.push(
           `no-compatible-challenge:${selection.rejections.join('+')}`,
         );
         continue;
       }
 
-      // A primeira tentativa é a escolha da seed. A segunda é deliberadamente a
-      // melhor opção do OUTRO desafio: com duas amostras do mesmo shuffle, uma
-      // topologia que sorteasse fosfato duas vezes nunca daria chance à
-      // micorriza, e a variedade exigida no §22 dependeria de sorte.
-      const firstAssignment = selection.assignments[0];
-      const alternativeAssignment = selection.assignments.find(assignment => (
-        assignment.challengeId !== firstAssignment.challengeId
+      // Duas tentativas por topologia. A primeira é a escolha da seed — que no
+      // T2 tende a ser um PAR, porque os pares vêm primeiro na lista. A segunda
+      // é deliberadamente um plano com composição diferente da primeira: sem
+      // isso, uma topologia que sorteasse dois planos parecidos nunca exploraria
+      // a alternativa, e a variedade dependeria de sorte.
+      const firstPlan = selection.plans[0];
+      const firstShape = firstPlan.map(entry => entry.challengeId).sort().join('+');
+      const alternativePlan = selection.plans.find(candidatePlan => (
+        candidatePlan.map(entry => entry.challengeId).sort().join('+') !== firstShape
       ));
-      const assignmentPool = [firstAssignment, alternativeAssignment]
+      const planPool = [firstPlan, alternativePlan]
         .filter(Boolean)
         .slice(0, T1_ATTEMPT_LIMITS.challengeAssignmentsPerTopology);
-      for (const assignment of assignmentPool) {
+      for (const assignmentPlan of planPool) {
         candidateAttempt.challengeAssignmentAttempts++;
         for (
           let geometryAttempt = 0;
@@ -1798,8 +1869,7 @@ export function composeOptionalDetourTopologyT1({
             level,
             candidate,
             topology,
-            challengeAssignment: assignment,
-            constraints: assignment.constraints,
+            challengeAssignments: assignmentPlan,
             abilities,
             seedValue,
             plan,
@@ -1808,7 +1878,7 @@ export function composeOptionalDetourTopologyT1({
           });
           if (!synthesis.success) {
             candidateAttempt.failureReasons.push(
-              `${topology.family}:${assignment.challengeId}:${assignment.zoneId}`
+              `${topology.family}:${planLabel(assignmentPlan)}`
               + `:${geometryAttempt}:${(synthesis.failureReasons || []).join('+')}`,
             );
             rollback(level, baseline, plan.startPlatform);
@@ -1822,7 +1892,7 @@ export function composeOptionalDetourTopologyT1({
             candidate,
             candidates,
             topology,
-            assignment,
+            assignmentPlan,
             synthesis,
             accessLanding,
             accessPlatform,
@@ -1870,10 +1940,19 @@ export function composeOptionalDetourTopologyT1({
           if (!primaryUnchanged) globalFailures.push('primaryRouteChanged');
           if (prebuiltBridge) globalFailures.push('prebuiltMycorrhizaBridgePresent');
           if (alreadySolved) globalFailures.push('structureBornSolved');
-          if (
-            assignment.challengeId === 'phosphate'
-            && detour.phosphateDepositInitialState !== 'blocked'
-          ) {
+          // Com dois desafios, um depósito por gate de fosfato. Conferir só o
+          // primeiro deixaria o segundo nascer aberto sem ninguém reclamar.
+          const phosphateGateCount = assignmentPlan
+            .filter(entry => entry.challengeId === 'phosphate').length;
+          const detourDeposits = (level.phosphateDeposits || []).filter(deposit => (
+            deposit.optionalDetourId === detour.id
+          ));
+          if (detourDeposits.length !== phosphateGateCount) {
+            globalFailures.push(
+              `depositCountMismatch:${detourDeposits.length}/${phosphateGateCount}`,
+            );
+          }
+          if (detourDeposits.some(deposit => deposit.broken !== false)) {
             globalFailures.push('depositNotInitiallyBlocked');
           }
           if (globalFailures.length) {
@@ -1923,7 +2002,7 @@ function buildTopologyDetourRecord({
   candidate,
   candidates,
   topology,
-  assignment,
+  assignmentPlan,
   synthesis,
   accessLanding,
   accessPlatform,
@@ -1948,7 +2027,7 @@ function buildTopologyDetourRecord({
     candidateCount: candidates.length,
     candidateSoftScore: candidate.softScore,
     candidateSoftWarnings: [...candidate.softWarnings],
-    compositionId: `${candidate.id}:t1:${topology.family}:${assignment.challengeId}`,
+    compositionId: `${candidate.id}:t2:${topology.family}:${planLabel(assignmentPlan)}`,
     compositionFallback: false,
     compositionFallbackReason: null,
     startLogicIndex: plan.startLogicIndex,
@@ -1973,11 +2052,19 @@ function buildTopologyDetourRecord({
     plannedScreens: topology.plannedScreens,
     targetVerticalRange: topology.targetVerticalRange,
 
-    challengeId: assignment.challengeId,
-    challengeFamily: assignment.family,
-    challengeZoneId: assignment.zoneId,
+    challengeId: assignmentPlan[0].challengeId,
+    challengeFamily: assignmentPlan[0].family,
+    challengeZoneId: assignmentPlan[0].zoneId,
+    challengeCount: assignmentPlan.length,
+    challengeIds: assignmentPlan.map(entry => entry.challengeId),
+    challengeZoneIds: assignmentPlan.map(entry => entry.zoneId),
+    challengeDifficulty: assignmentPlan.reduce(
+      (sum, entry) => sum + entry.difficultyCost,
+      0,
+    ),
+    challenges: synthesis.challenges,
     challengePositionClass: synthesis.structuralSignature.challengePositionClass,
-    challengeGeometryProfiles: [...assignment.geometryProfiles],
+    challengeGeometryProfiles: [...assignmentPlan[0].geometryProfiles],
     challengeMetrics: synthesis.challenge.metrics,
     mycorrhizaSourcePlatformId: synthesis.challenge.sourcePlatformId,
     mycorrhizaTargetPlatformId: synthesis.challenge.targetPlatformId,
@@ -2055,6 +2142,7 @@ export function createPhaseTenTopologyDetour({
   phase,
   seedValue,
   abilities = ['doubleJump', 'dash', 'phosphateSolubilization', 'mycorrhizaStructures'],
+  maximumChallenges = 2,
 } = {}) {
   level.optionalDetours = [];
   if (phase !== 10) return null;
@@ -2070,6 +2158,7 @@ export function createPhaseTenTopologyDetour({
     candidates: collected.candidates,
     seedValue,
     abilities,
+    maximumChallenges,
   });
   level.optionalDetourComposition = composition;
   level.optionalDetourTopologyMode = true;

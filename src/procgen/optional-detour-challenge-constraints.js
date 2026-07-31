@@ -39,10 +39,18 @@ export const MYCORRHIZA_GEOMETRY_PROFILES = Object.freeze([
 
 export const TOPOLOGY_CHALLENGE_IDS = Object.freeze(['phosphate', 'mycorrhiza']);
 
-// Orçamento de dificuldade do T1. Fosfato e micorriza custam 2 cada, então o
-// orçamento 3 é o que garante mecanicamente "exatamente um desafio biológico"
-// (§11) sem precisar de um `if` extra em cima da seleção.
+// Orçamento de dificuldade. Fosfato e micorriza custam 2 cada, então o
+// orçamento 3 garante mecanicamente "exatamente um desafio biológico" — era a
+// regra do T1. O T2 sobe para 4, que é o mínimo para os dois caberem juntos:
+// o orçamento é a trava, não um `if` em cima da seleção.
 export const T1_DIFFICULTY_BUDGET = 3;
+export const T2_DIFFICULTY_BUDGET = 4;
+
+// Quantas zonas precisam existir ENTRE dois desafios. Zero deixaria o depósito
+// de fosfato e o vão da micorriza dividirem fronteira, e as regiões proibidas
+// de um invadiriam o espaço de interação do outro. Uma zona de movimento no
+// meio é o que faz a rota ler como dois momentos, e não como um amontoado.
+export const MINIMUM_ZONES_BETWEEN_CHALLENGES = 1;
 
 export const CHALLENGE_DIFFICULTY_COST = Object.freeze({
   phosphate: 2,
@@ -548,7 +556,7 @@ export function selectTopologyChallenge({
 // nesse momento já conhece a física de cada aresta.
 
 function zoneNodeRoles(zone, assignment) {
-  if (assignment && assignment.zoneId === zone.id) {
+  if (assignment) {
     return [...assignment.constraints.requiredNodeRoles];
   }
   if (zone.role === 'entry') return ['zone-entry'];
@@ -560,6 +568,7 @@ export function buildOptionalDetourTopologyGraph({
   topology,
   zoneSpans = [],
   challengeAssignment = null,
+  challengeAssignments = null,
   entryAnchor = null,
   startX = 0,
   startY = 0,
@@ -568,6 +577,14 @@ export function buildOptionalDetourTopologyGraph({
 } = {}) {
   if (!topology) return { nodes: [], edges: [], valid: false, reason: 'missing-topology' };
   const spanById = new Map(zoneSpans.map(entry => [entry.zoneId, entry.span]));
+  // Uma rota pode ter mais de um desafio: o grafo indexa por zona em vez de
+  // comparar contra um único `zoneId`.
+  const assignmentByZoneId = new Map(
+    ((challengeAssignments && challengeAssignments.length)
+      ? challengeAssignments
+      : [challengeAssignment].filter(Boolean)
+    ).map(entry => [entry.zoneId, entry]),
+  );
   const nodes = [];
   const edges = [];
 
@@ -595,10 +612,9 @@ export function buildOptionalDetourTopologyGraph({
     const [deltaMin, deltaMax] = zone.verticalDeltaRange;
     const zoneTopY = cursorY + Math.min(deltaMin, 0);
     const zoneBottomY = cursorY + Math.max(deltaMax, 0);
-    const roles = zoneNodeRoles(zone, challengeAssignment);
-    const isChallengeZone = Boolean(
-      challengeAssignment && challengeAssignment.zoneId === zone.id,
-    );
+    const zoneAssignment = assignmentByZoneId.get(zone.id) || null;
+    const roles = zoneNodeRoles(zone, zoneAssignment);
+    const isChallengeZone = Boolean(zoneAssignment);
 
     roles.forEach((role, index) => {
       const slice = roles.length;
@@ -621,7 +637,7 @@ export function buildOptionalDetourTopologyGraph({
           zoneRole: zone.role,
           zoneOrder: zone.order,
           allowedChallengeProfiles: [...zone.allowedChallengeProfiles],
-          challengeId: isChallengeZone ? challengeAssignment.challengeId : null,
+          challengeId: isChallengeZone ? zoneAssignment.challengeId : null,
           // Zonas sem desafio recebem uma contagem de plataformas DERIVADA do
           // vão; o grafo só declara a faixa possível.
           dynamicPlatformCountRange: isChallengeZone ? [1, 3] : [1, 6],
@@ -631,7 +647,7 @@ export function buildOptionalDetourTopologyGraph({
       if (previousNodeId) {
         const challengeEdge = isChallengeZone
           && index === roles.length - 1
-          && challengeAssignment.constraints.requiredEdges[0];
+          && zoneAssignment.constraints.requiredEdges[0];
         edges.push({
           id: `${previousNodeId}->${nodeId}`,
           fromNodeId: previousNodeId,
@@ -646,7 +662,7 @@ export function buildOptionalDetourTopologyGraph({
           metadata: {
             zoneId: zone.id,
             verticalIntent: zone.verticalIntent,
-            challengeId: challengeEdge ? challengeAssignment.challengeId : null,
+            challengeId: challengeEdge ? zoneAssignment.challengeId : null,
           },
         });
       }
@@ -684,4 +700,87 @@ export function buildOptionalDetourTopologyGraph({
   }
 
   return { nodes, edges, valid: true, reason: null };
+}
+
+// ---------------------------------------------------------------------------
+// PLANOS DE DESAFIO — um ou dois na mesma rota
+// ---------------------------------------------------------------------------
+//
+// O T1 escolhia um desafio. O T2 escolhe um PLANO: uma lista de uma ou duas
+// atribuições. Manter a lista mesmo quando ela tem um elemento só evita o
+// caminho que costuma apodrecer — um código para o caso simples e outro para o
+// composto, divergindo com o tempo.
+
+function planDifficulty(assignments) {
+  return assignments.reduce((sum, entry) => sum + entry.difficultyCost, 0);
+}
+
+function zonesApart(left, right) {
+  return Math.abs(left.zoneOrder - right.zoneOrder) - 1;
+}
+
+/**
+ * Monta os planos possíveis a partir das atribuições compatíveis, em ordem
+ * determinística. Pares primeiro quando cabem, porque é o que o T2 quer provar;
+ * os planos de um desafio continuam no fim da lista e permanecem um resultado
+ * legítimo quando o vão não comporta dois.
+ */
+export function selectTopologyChallengePlans({
+  topology,
+  zones = null,
+  abilities = [],
+  organisms = [],
+  seedValue = '',
+  candidateId = 'candidate',
+  zoneSpans = null,
+  difficultyBudget = T2_DIFFICULTY_BUDGET,
+  maximumChallenges = 2,
+  campaignState = null,
+} = {}) {
+  const selection = selectTopologyChallenge({
+    topology,
+    zones,
+    abilities,
+    organisms,
+    seedValue,
+    candidateId,
+    zoneSpans,
+    // A compatibilidade individual é medida contra o custo do próprio desafio,
+    // não contra o orçamento do plano — senão nenhum dos dois passaria sozinho.
+    difficultyBudget,
+    campaignState,
+  });
+  if (!selection.assignments.length) {
+    return { plans: [], assignments: [], rejections: selection.rejections };
+  }
+
+  const random = createRandom(
+    `${seedValue}:t2-plan:${candidateId}:${topology.id}`,
+  );
+  const singles = selection.assignments.map(assignment => [assignment]);
+
+  const pairs = [];
+  if (maximumChallenges >= 2) {
+    for (const first of selection.assignments) {
+      for (const second of selection.assignments) {
+        if (first === second) continue;
+        if (first.challengeId === second.challengeId) continue;
+        if (first.zoneId === second.zoneId) continue;
+        if (first.zoneOrder > second.zoneOrder) continue;
+        if (zonesApart(first, second) < MINIMUM_ZONES_BETWEEN_CHALLENGES) continue;
+        const plan = [first, second];
+        if (planDifficulty(plan) > difficultyBudget) continue;
+        pairs.push(plan);
+      }
+    }
+  }
+
+  const orderedPairs = deterministicShuffle(pairs, random);
+  const orderedSingles = deterministicShuffle(singles, random);
+  return {
+    plans: [...orderedPairs, ...orderedSingles],
+    assignments: selection.assignments,
+    rejections: selection.rejections,
+    pairCount: pairs.length,
+  };
 }
