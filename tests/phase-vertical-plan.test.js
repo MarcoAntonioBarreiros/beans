@@ -71,11 +71,20 @@ function silhouetteOf(level) {
     }
     longestRun = Math.max(longestRun, run);
   }
+  let climbPixels = 0;
+  let dropPixels = 0;
+  for (let index = 1; index < route.length; index++) {
+    const delta = route[index].y - route[index - 1].y;
+    if (delta < 0) climbPixels -= delta;
+    else dropPixels += delta;
+  }
   return {
     verticalRange: Math.max(...ys) - Math.min(...ys),
     longestRun,
     climbs,
     drops,
+    climbPixels,
+    dropPixels,
     stepCount: route.length - 1,
   };
 }
@@ -148,25 +157,51 @@ test('silhueta - a rota planejada sustenta a direção por mais passos', () => {
     planRun >= baseRun + 1,
     `corrida sustentada: ${planRun.toFixed(1)} planejada contra ${baseRun.toFixed(1)} clássica`,
   );
-  assert.ok(planRun >= 3.8, `corrida sustentada média baixa: ${planRun.toFixed(1)}`);
+  assert.ok(planRun >= 5, `corrida sustentada média baixa: ${planRun.toFixed(1)}`);
 });
 
-test('silhueta - o viés para cima desaparece', () => {
+test('silhueta - a verticalidade é visível em fração de tela, não só em passos', () => {
+  // A primeira versão desta silhueta passou em "corrida sustentada" e mesmo
+  // assim o jogador não viu diferença: subia 41% de uma tela ao longo de dez
+  // telas de largura. Passos não são o que se vê; pixels de tela são.
+  const SCREEN_HEIGHT = 720;
+  const amplitude = average(PLANNED.map(entry => entry.silhouette.verticalRange));
+  const baseAmplitude = average(BASELINE.map(entry => entry.verticalRange));
+  assert.ok(
+    amplitude >= SCREEN_HEIGHT * 0.55,
+    `amplitude ${(amplitude / SCREEN_HEIGHT * 100).toFixed(0)}% de tela`,
+  );
+  assert.ok(
+    amplitude >= baseAmplitude * 1.4,
+    `amplitude ${amplitude.toFixed(0)} contra ${baseAmplitude.toFixed(0)} da clássica`,
+  );
+});
+
+test('silhueta - o viés para cima diminui, medido em pixels', () => {
+  // Medir em PASSOS engana: `traversalLimits` deixa cada passo descer 82-142 px
+  // mas subir só 46-92, então uma rota equilibrada em pixels sempre parece
+  // enviesada quando se contam passos. Foi assim que a primeira versão deste
+  // teste declarou "sem viés" numa rota que sobe o dobro do que desce.
   const ratio = entries => {
-    const climbs = entries.reduce((sum, entry) => sum + entry.climbs, 0);
-    const drops = entries.reduce((sum, entry) => sum + entry.drops, 0);
-    return climbs / Math.max(1, drops);
+    const climb = entries.reduce((sum, entry) => sum + entry.climbPixels, 0);
+    const drop = entries.reduce((sum, entry) => sum + entry.dropPixels, 0);
+    return climb / Math.max(1, drop);
   };
   const baseRatio = ratio(BASELINE);
   const planRatio = ratio(PLANNED.map(entry => entry.silhouette));
-  // A rota clássica sobe cerca de duas vezes mais passos do que desce; o plano
-  // precisa aproximar isso de 1 sem inverter para o outro lado.
-  assert.ok(baseRatio > 1.5, `a base deixou de ter viés: ${baseRatio.toFixed(2)}`);
+  assert.ok(baseRatio > 1.7, `a base deixou de ter viés: ${baseRatio.toFixed(2)}`);
   assert.ok(
-    planRatio < 1.45 && planRatio > 0.7,
-    `viés planejado fora de faixa: ${planRatio.toFixed(2)}`,
+    planRatio < baseRatio * 0.85,
+    `viés ${planRatio.toFixed(2)} contra ${baseRatio.toFixed(2)} da clássica`,
   );
-  assert.ok(planRatio < baseRatio, 'o plano não reduziu o viés');
+  // E descer tem de ser um evento real, não migalha: a rota planejada precisa
+  // gastar bem mais pixels descendo do que a clássica.
+  const baseDrop = BASELINE.reduce((sum, entry) => sum + entry.dropPixels, 0);
+  const planDrop = PLANNED.reduce((sum, entry) => sum + entry.silhouette.dropPixels, 0);
+  assert.ok(
+    planDrop > baseDrop * 1.5,
+    `descida planejada ${planDrop.toFixed(0)} contra ${baseDrop.toFixed(0)}`,
+  );
 });
 
 test('silhueta - a física da rota continua válida com o plano', () => {

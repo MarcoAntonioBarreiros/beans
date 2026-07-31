@@ -24,20 +24,23 @@ import { createRandom } from './random.js';
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
 const lerp = (a, b, t) => a + (b - a) * t;
 
-// Envelope global. A faixa de hoje tem 330 px (235..565); esta tem 480. O mundo
-// e a câmera acompanham porque `calculateWorldGeometryBounds` deriva os limites
-// da geometria real — é o mesmo motivo pelo qual a rota opcional consegue viver
-// em Y negativo.
-export const PHASE_VERTICAL_ENVELOPE = Object.freeze({ top: 120, bottom: 600 });
+// Envelope global. A faixa de hoje tem 330 px (235..565); esta tem 820 e entra
+// em Y negativo. O mundo e a câmera acompanham porque
+// `calculateWorldGeometryBounds` deriva os limites da geometria real — é o
+// mesmo motivo pelo qual a rota opcional já vive acima de zero.
+export const PHASE_VERTICAL_ENVELOPE = Object.freeze({ top: -220, bottom: 600 });
 
 // Meia-largura da faixa em torno da linha-alvo. Estreita demais e o relevo local
 // desaparece (todo passo vira o mesmo passo); larga demais e a intenção da zona
 // se dilui na aleatoriedade que já existia.
-const BAND_HALF_HEIGHT = 52;
+const BAND_HALF_HEIGHT = 46;
 
 export const PHASE_SILHOUETTE_CONTRACTS = Object.freeze({
-  minimumVerticalRange: 200,
-  minimumSustainedRun: 3,
+  // 430 px é ~60% de uma tela de 720. Abaixo disso a silhueta existe nos
+  // números e não existe para quem joga — foi o que aconteceu na primeira
+  // versão, que subia 41% de uma tela ao longo de dez telas de largura.
+  minimumVerticalRange: 430,
+  minimumSustainedRun: 5,
   maximumMonotonicShare: 0.6,
   minimumClimbZones: 1,
   minimumDropZones: 1,
@@ -46,76 +49,73 @@ export const PHASE_SILHOUETTE_CONTRACTS = Object.freeze({
 // As famílias falam em FRAÇÃO DE CHUNKS, não em pixels de largura: a mesma
 // silhueta serve a uma fase de 24 e a uma de 48 chunks. `verticalDelta` é
 // assinado — negativo sobe.
+// Poucas zonas, longas. A primeira versão tinha 5 a 7 zonas em 40 chunks — 6 a
+// 8 chunks cada. Como `traversalLimits` deixa cada passo subir no máximo 46 a
+// 92 px, uma zona de 7 chunks nunca passa de ~300 px de altura, e 300 px numa
+// fase de 10 telas de largura é visualmente plano.
+//
+// Com 3 a 5 zonas, uma subida ganha 10 a 15 chunks e pode somar 600 px ou mais.
+// É o COMPRIMENTO da zona que vira altura, não o tamanho do passo.
 const FAMILY_DEFINITIONS = Object.freeze([
-  Object.freeze({
-    id: 'ridge-valley',
-    label: 'Crista e vale',
-    zones: Object.freeze([
-      Object.freeze({ role: 'entry', verticalIntent: 'hold', weight: 0.9, verticalDelta: [-29, 29] }),
-      Object.freeze({ role: 'climb', verticalIntent: 'climb', weight: 1.2, verticalDelta: [-304, -218] }),
-      Object.freeze({ role: 'ridge', verticalIntent: 'crest', weight: 0.8, verticalDelta: [-58, 29] }),
-      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 1.3, verticalDelta: [276, 406] }),
-      Object.freeze({ role: 'valley', verticalIntent: 'valley', weight: 0.9, verticalDelta: [-29, 58] }),
-      Object.freeze({ role: 'recovery', verticalIntent: 'recover', weight: 1.1, verticalDelta: [-261, -160] }),
-    ]),
-  }),
   Object.freeze({
     id: 'open-tower',
     label: 'Torre aberta',
     zones: Object.freeze([
-      Object.freeze({ role: 'entry', verticalIntent: 'hold', weight: 0.8, verticalDelta: [-29, 29] }),
-      Object.freeze({ role: 'climb', verticalIntent: 'climb', weight: 1.6, verticalDelta: [-435, -319] }),
-      Object.freeze({ role: 'upper', verticalIntent: 'hold', weight: 1.2, verticalDelta: [-58, 58] }),
-      Object.freeze({ role: 'climb', verticalIntent: 'climb', weight: 0.9, verticalDelta: [-203, -116] }),
-      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 1.5, verticalDelta: [377, 522] }),
+      Object.freeze({ role: 'entry', verticalIntent: 'hold', weight: 0.5, verticalDelta: [-30, 30] }),
+      Object.freeze({ role: 'climb', verticalIntent: 'climb', weight: 2.2, verticalDelta: [-780, -580] }),
+      Object.freeze({ role: 'summit', verticalIntent: 'hold', weight: 0.9, verticalDelta: [-60, 60] }),
+      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 1.6, verticalDelta: [520, 720] }),
     ]),
   }),
   Object.freeze({
     id: 'descending-canyon',
     label: 'Descida em cânion',
     zones: Object.freeze([
-      Object.freeze({ role: 'entry', verticalIntent: 'hold', weight: 0.8, verticalDelta: [-44, 14] }),
-      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 1.5, verticalDelta: [334, 464] }),
-      Object.freeze({ role: 'valley', verticalIntent: 'valley', weight: 1.0, verticalDelta: [-44, 72] }),
-      Object.freeze({ role: 'recovery', verticalIntent: 'recover', weight: 1.3, verticalDelta: [-319, -218] }),
-      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 1.0, verticalDelta: [174, 290] }),
-      Object.freeze({ role: 'exit', verticalIntent: 'hold', weight: 0.8, verticalDelta: [-44, 44] }),
+      Object.freeze({ role: 'entry', verticalIntent: 'hold', weight: 0.5, verticalDelta: [-30, 20] }),
+      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 1.4, verticalDelta: [380, 520] }),
+      Object.freeze({ role: 'valley', verticalIntent: 'valley', weight: 0.7, verticalDelta: [-40, 60] }),
+      Object.freeze({ role: 'recovery', verticalIntent: 'recover', weight: 2.0, verticalDelta: [-760, -560] }),
+    ]),
+  }),
+  Object.freeze({
+    id: 'ridge-valley',
+    label: 'Crista e vale',
+    zones: Object.freeze([
+      Object.freeze({ role: 'entry', verticalIntent: 'hold', weight: 0.5, verticalDelta: [-30, 30] }),
+      Object.freeze({ role: 'climb', verticalIntent: 'climb', weight: 1.7, verticalDelta: [-620, -450] }),
+      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 1.7, verticalDelta: [480, 660] }),
+      Object.freeze({ role: 'recovery', verticalIntent: 'recover', weight: 1.1, verticalDelta: [-400, -270] }),
     ]),
   }),
   Object.freeze({
     id: 'double-crest',
     label: 'Duas cristas',
     zones: Object.freeze([
-      Object.freeze({ role: 'entry', verticalIntent: 'hold', weight: 0.8, verticalDelta: [-29, 29] }),
-      Object.freeze({ role: 'ridge', verticalIntent: 'climb', weight: 1.2, verticalDelta: [-290, -203] }),
-      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 1.0, verticalDelta: [218, 319] }),
-      Object.freeze({ role: 'valley', verticalIntent: 'valley', weight: 0.9, verticalDelta: [-29, 87] }),
-      Object.freeze({ role: 'ridge', verticalIntent: 'climb', weight: 1.3, verticalDelta: [-348, -246] }),
-      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 1.0, verticalDelta: [246, 362] }),
+      Object.freeze({ role: 'entry', verticalIntent: 'hold', weight: 0.4, verticalDelta: [-30, 30] }),
+      Object.freeze({ role: 'ridge', verticalIntent: 'climb', weight: 1.3, verticalDelta: [-500, -360] }),
+      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 1.1, verticalDelta: [420, 560] }),
+      Object.freeze({ role: 'ridge', verticalIntent: 'climb', weight: 1.4, verticalDelta: [-560, -420] }),
+      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 1.2, verticalDelta: [430, 580] }),
     ]),
   }),
   Object.freeze({
     id: 'zigzag',
     label: 'Zigue-zague',
     zones: Object.freeze([
-      Object.freeze({ role: 'entry', verticalIntent: 'hold', weight: 0.7, verticalDelta: [-29, 29] }),
-      Object.freeze({ role: 'climb', verticalIntent: 'climb', weight: 0.9, verticalDelta: [-246, -174] }),
-      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 0.9, verticalDelta: [188, 276] }),
-      Object.freeze({ role: 'climb', verticalIntent: 'climb', weight: 0.9, verticalDelta: [-276, -203] }),
-      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 0.9, verticalDelta: [218, 304] }),
-      Object.freeze({ role: 'climb', verticalIntent: 'climb', weight: 0.9, verticalDelta: [-232, -160] }),
-      Object.freeze({ role: 'exit', verticalIntent: 'descend', weight: 0.8, verticalDelta: [130, 218] }),
+      Object.freeze({ role: 'climb', verticalIntent: 'climb', weight: 1.1, verticalDelta: [-430, -320] }),
+      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 1.0, verticalDelta: [340, 460] }),
+      Object.freeze({ role: 'climb', verticalIntent: 'climb', weight: 1.2, verticalDelta: [-480, -350] }),
+      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 1.1, verticalDelta: [380, 500] }),
+      Object.freeze({ role: 'climb', verticalIntent: 'climb', weight: 1.0, verticalDelta: [-400, -290] }),
     ]),
   }),
   Object.freeze({
     id: 'long-plateau',
-    label: 'Platô longo e queda',
+    label: 'Platô alto e queda',
     zones: Object.freeze([
-      Object.freeze({ role: 'entry', verticalIntent: 'hold', weight: 0.8, verticalDelta: [-29, 29] }),
-      Object.freeze({ role: 'climb', verticalIntent: 'climb', weight: 1.1, verticalDelta: [-290, -218] }),
-      Object.freeze({ role: 'plateau', verticalIntent: 'hold', weight: 2.0, verticalDelta: [-72, 72] }),
-      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 1.4, verticalDelta: [362, 493] }),
-      Object.freeze({ role: 'exit', verticalIntent: 'recover', weight: 0.9, verticalDelta: [-174, -87] }),
+      Object.freeze({ role: 'climb', verticalIntent: 'climb', weight: 1.6, verticalDelta: [-620, -470] }),
+      Object.freeze({ role: 'plateau', verticalIntent: 'hold', weight: 2.0, verticalDelta: [-70, 70] }),
+      Object.freeze({ role: 'descent', verticalIntent: 'descend', weight: 1.7, verticalDelta: [600, 780] }),
     ]),
   }),
 ]);
@@ -146,6 +146,12 @@ export function createPhaseVerticalPlan({
 } = {}) {
   if (!Number.isFinite(totalChunks) || totalChunks < 8) return null;
   const random = createRandom(`${seedValue}:phase-silhouette:p${phase}`);
+  // Duas extrações descartadas antes de escolher a família. O Mulberry32 é bom,
+  // mas o PRIMEIRO valor de sementes textualmente parecidas ("tela-1:fase-10",
+  // "tela-2:fase-10"...) fica agrupado: em 16 seeds, uma das seis famílias não
+  // saía nenhuma vez. Aquecer o gerador espalha a escolha.
+  random();
+  random();
   const family = familyId
     ? FAMILY_DEFINITIONS.find(entry => entry.id === familyId)
     : FAMILY_DEFINITIONS[Math.floor(random() * FAMILY_DEFINITIONS.length)];

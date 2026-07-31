@@ -551,14 +551,24 @@ const optionalDetourVariant =
 
 // O T1 é um modo NOVO e isolado. O CP2 continua chamando exatamente o
 // compositor B2: os dois nunca compartilham resultado.
-const optionalDetourTopologyMode =
-  optionalDetourVariant === 'optional-detour-topology-t1'
-  || optionalDetourVariant === 'phase-topology-t3';
-
 // T3: silhueta planejada da ROTA PRINCIPAL. Sem este modo, `generateLevel` roda
 // exatamente como hoje — o fallback é a ausência do plano, não um segundo
 // caminho a manter.
-const phaseTopologyMode = optionalDetourVariant === 'phase-topology-t3';
+//
+// Dois nomes para o mesmo modo, de propósito. O T1 é `optional-detour-topology-t1`
+// e batizar o T3 só de `phase-topology-t3` quebrou a série: quem digitou
+// `optional-detour-topology-t3` caiu FORA de qualquer modo de playtest, a
+// supressão da torre antiga não aconteceu, e o `tower-safe-fall-01` reapareceu
+// parecendo defeito novo. Um alias custa uma linha; o diagnóstico custou caro.
+const PHASE_TOPOLOGY_VARIANTS = [
+  'phase-topology-t3',
+  'optional-detour-topology-t3',
+];
+const phaseTopologyMode = PHASE_TOPOLOGY_VARIANTS.includes(optionalDetourVariant);
+
+const optionalDetourTopologyMode =
+  optionalDetourVariant === 'optional-detour-topology-t1'
+  || phaseTopologyMode;
 
 const optionalDetourPlaytestMode = [
   'optional-detour-cp1',
