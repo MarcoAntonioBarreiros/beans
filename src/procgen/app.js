@@ -14,6 +14,7 @@ import { applyPhaseFiveTutorialEncounters, applyPhaseFiveTutorialGeometry } from
 import { applyPhaseSixTutorialEncounters, applyPhaseSixTutorialGeometry } from './phase-six-tutorial.js';
 import { applyPhaseSevenPhosphateGeometry } from './phosphate-solubilization.js';
 import { createPhaseTenOptionalDetour } from './optional-detour-composer.js';
+import { createPhaseTenTopologyDetour } from './optional-detour-topology-synthesizer.js';
 import { validateOptionalDetour } from './optional-detour-validator.js';
 import { getNitrogenAvailability } from './nitrogen-availability.js';
 import {
@@ -351,6 +352,37 @@ function optionalDetourDebug(level) {
   }).join('');
 }
 
+// Painel do §21. Só o modo T1 o produz; o CP2 continua com `optionalDetourDebug`.
+function topologyDetourDebug(level) {
+  const detour = (level?.optionalDetours || [])
+    .find(entry => entry.implementationStage === 'T1');
+  if (!detour) {
+    if (!level?.optionalDetourTopologyMode) return '';
+    const composition = level.optionalDetourComposition || {};
+    return `\nTOPOLOGIA T1: nenhuma sintese aceita`
+      + `\n  MOTIVOS: ${(composition.failureReasons || []).slice(0, 4).join(' / ') || '-'}`;
+  }
+  const signature = detour.structuralSignature || {};
+  const silhouette = detour.silhouette || {};
+  return `\nTOPOLOGIA: ${detour.topologyFamily} (${detour.topologyFamilyLabel})`
+    + `\nZONAS: ${(signature.zoneRoles || []).join(' > ')}`
+    + `\n  intencoes: ${(signature.zoneVerticalIntents || []).join(' > ')}`
+    + `\n  plataformas/zona: ${(signature.platformCountPerZone || []).join('-')}`
+    + `\nDESAFIO: ${detour.challengeId} (${detour.challengeFamily})`
+    + `\nZONA DO DESAFIO: ${detour.challengeZoneId} | ${detour.challengePositionClass}`
+    + `\nAMPLITUDE: ${silhouette.verticalRange}px`
+    + ` | monotonia ${silhouette.monotonicShare} | plano ${silhouette.flatShare}`
+    + `\nSUBIDAS/DESCIDAS: ${silhouette.climbCount}/${silhouette.dropCount}`
+    + `\nTENTATIVAS: topologias ${detour.topologyAttempts}`
+    + ` | atribuicoes ${detour.challengeAssignmentAttempts}`
+    + ` | sinteses ${detour.geometryAttempts}`
+    + ` | falhas ${detour.failureReasons?.length || 0}`
+    + `\nASSINATURA: ${JSON.stringify(signature)}`
+    + `\n  vaos: ${(detour.intentionalGaps || []).map(gap => gap.kind).join(',') || '-'}`
+    + ` | conectores ${detour.connectorCount}`
+    + ` | validacao ${detour.validation?.valid ? 'OK' : (detour.validation?.failures || []).join(',')}`;
+}
+
 // Um requisito com `displayMode: 'final-status'` nao e conquista acumulativa: e
 // um STATUS que precisa valer no momento da conclusao. Mostra-lo verde no
 // primeiro quadro (quando ainda nao existe nenhum foco) faz o jogador acreditar
@@ -492,10 +524,15 @@ if (phaseLab.enabled) campaignStorage = null;
 const optionalDetourVariant =
   new URLSearchParams(window.location.search).get('v');
 
+// O T1 é um modo NOVO e isolado. O CP2 continua chamando exatamente o
+// compositor B2: os dois nunca compartilham resultado.
+const optionalDetourTopologyMode =
+  optionalDetourVariant === 'optional-detour-topology-t1';
+
 const optionalDetourPlaytestMode = [
   'optional-detour-cp1',
   'optional-detour-cp2',
-].includes(optionalDetourVariant);
+].includes(optionalDetourVariant) || optionalDetourTopologyMode;
 
 let sim = null;
 
@@ -651,11 +688,7 @@ function prepareLevel() {
   // Garante que a mecanica-tema da fase seja necessaria ao menos uma vez.
   applySignatureChallenge(levelData, campaign.phase);
   traceGeometry('applySignatureChallenge');
-  const optionalDetour = createPhaseTenOptionalDetour({
-    level: levelData,
-    phase: campaign.phase,
-    seedValue: seed,
-    abilities: [
+  const optionalDetourAbilities = [
       ...(campaign.unlocks?.doubleJump ? ['doubleJump'] : []),
       ...(campaign.unlocks?.dash ? ['dash'] : []),
       ...(campaign.unlocks?.phosphateSolubilization
@@ -664,8 +697,20 @@ function prepareLevel() {
       ...(campaign.unlocks?.mycorrhizaStructures
         ? ['mycorrhizaStructures']
         : []),
-    ],
-  });
+  ];
+  const optionalDetour = optionalDetourTopologyMode
+    ? createPhaseTenTopologyDetour({
+        level: levelData,
+        phase: campaign.phase,
+        seedValue: seed,
+        abilities: optionalDetourAbilities,
+      })
+    : createPhaseTenOptionalDetour({
+        level: levelData,
+        phase: campaign.phase,
+        seedValue: seed,
+        abilities: optionalDetourAbilities,
+      });
   if (phaseLab.enabled) applyPhaseLabResources(levelData, getPhaseManifest(campaign.phase), seed);
   applyPhaseSevenPhosphateGeometry(
     levelData,
@@ -707,7 +752,11 @@ function prepareLevel() {
       ? null
       : declaredAzospirillumLadder || contextualAzospirillumLadder,
   });
-  if (optionalDetour) {
+  // `validateOptionalDetour` conhece o vocabulário do B2 (sequência de módulos,
+  // entrada combo obrigatória, slots). Um desvio T1 não tem nada disso e já
+  // trouxe a própria validação do §19 — revalidá-lo aqui só produziria falhas
+  // sobre campos que ele nunca teve.
+  if (optionalDetour && optionalDetour.implementationStage !== 'T1') {
     optionalDetour.validation = validateOptionalDetour(levelData, optionalDetour);
     optionalDetour.primaryRouteGeometryHashAfter =
       optionalDetour.validation.primaryRouteGeometryHashAfter;
@@ -1468,6 +1517,7 @@ function loop(now) {
         + `\nRotas: ${levelData.traversalEncounterStats?.created || 0}/${levelData.traversalEncounterStats?.planned || 0} encontros · ${levelData.traversalEncounterStats?.fallbacks || 0} fallbacks`
         + traversalEncounterDebug(levelData)
         + optionalDetourDebug(levelData)
+        + topologyDetourDebug(levelData)
         + `\nNodulação: ${sim.rhizobiumNodulation.siteCount} sítios / ${sim.rhizobiumNodulation.matureCount} maduros / ${sim.rhizobiumNodulation.activeCount} ativos / FBN ${fixation}`
         + (sim.rhizobiumNodulation.incompatibleCount ? ` / ${sim.rhizobiumNodulation.incompatibleCount} sem hospedeiro` : '')
         + `\nTrichoderma: ${sim.trichodermaColonies.followerCount} seguindo / ${sim.trichodermaColonies.colonyCount} colônias / vigor médio ${vigor}%`

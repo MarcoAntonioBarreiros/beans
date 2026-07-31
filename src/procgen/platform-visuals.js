@@ -455,6 +455,97 @@ export function createPlatformVisuals({ state }) {
     ctx.restore();
   }
 
+  // Overlay do §21. Desenha limites de zona, nós do grafo, arestas normais, a
+  // aresta bloqueada, o vão intencional e a saída por queda. Nada aqui cria
+  // colisor: é só `ctx`.
+  function drawTopologyT1Debug(ctx) {
+    if (!state.level.traversalDebugVisible) return;
+    const detour = (state.level.optionalDetours || [])
+      .find(entry => entry.implementationStage === 'T1');
+    if (!detour) return;
+    const overlay = detour.topologyOverlay || {};
+    const byId = id => (state.level.platforms || []).find(platform => (
+      (platform.platformId ?? platform.id) === id
+    ));
+    ctx.save();
+    ctx.font = '600 11px ui-monospace, SFMono-Regular, Consolas, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+
+    // Limites das zonas.
+    const corridor = overlay.corridor || {};
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 6]);
+    for (const zone of overlay.zones || []) {
+      const exit = byId(zone.exitPlatformId);
+      if (!exit) continue;
+      const x = exit.x + exit.w;
+      ctx.strokeStyle = zone.challengeId ? '#ff8ae2' : '#5fd0ff';
+      ctx.beginPath();
+      ctx.moveTo(x, (corridor.top ?? exit.y - 320));
+      ctx.lineTo(x, (corridor.bottom ?? exit.y + 220));
+      ctx.stroke();
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.fillText(
+        `${zone.role}/${zone.verticalIntent}${zone.challengeId ? ` [${zone.challengeId}]` : ''}`,
+        x + 6,
+        (corridor.top ?? exit.y - 320) + 16,
+      );
+    }
+
+    // Nós do grafo: faixas, não posições finais — por isso retângulos ocos.
+    ctx.setLineDash([2, 4]);
+    ctx.strokeStyle = 'rgba(160, 200, 255, .55)';
+    for (const node of overlay.nodes || []) {
+      const [left, right] = node.xRange || [];
+      const [top, bottom] = node.yRange || [];
+      if (![left, right, top, bottom].every(Number.isFinite)) continue;
+      ctx.strokeRect(left, top, right - left, bottom - top);
+    }
+
+    // Arestas.
+    ctx.setLineDash([]);
+    for (const edge of overlay.edges || []) {
+      const from = byId(edge.from);
+      const to = byId(edge.to);
+      if (!from || !to) continue;
+      if (edge.role === 'movement') ctx.strokeStyle = '#8ef5b0';
+      else if (edge.role === 'drop-rejoin') ctx.strokeStyle = '#ffd75c';
+      else ctx.strokeStyle = '#ff5b6e';
+      ctx.lineWidth = edge.role === 'movement' ? 2 : 4;
+      ctx.beginPath();
+      ctx.moveTo(from.x + from.w - 8, from.y - 10);
+      ctx.lineTo(to.x + 8, to.y - 10);
+      ctx.stroke();
+      if (edge.role !== 'movement') {
+        ctx.fillStyle = ctx.strokeStyle;
+        ctx.fillText(
+          edge.blockedUntil || edge.role,
+          from.x + from.w + 10,
+          from.y - 18,
+        );
+      }
+    }
+
+    // Vãos intencionais.
+    ctx.lineWidth = 2;
+    ctx.setLineDash([10, 6]);
+    for (const gap of overlay.intentionalGaps || []) {
+      const bounds = gap.bounds;
+      if (!bounds) continue;
+      ctx.strokeStyle = gap.kind === 'mycorrhiza-bridge-gap' ? '#ff5b6e' : '#ffa552';
+      ctx.strokeRect(
+        bounds.left,
+        bounds.top,
+        bounds.right - bounds.left,
+        bounds.bottom - bounds.top,
+      );
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.fillText(gap.kind, bounds.left + 6, bounds.top - 4);
+    }
+    ctx.restore();
+  }
+
   function drawWorld(ctx) {
     ctx.save();
     ctx.translate(-state.cameraX, 0);
@@ -492,6 +583,7 @@ export function createPlatformVisuals({ state }) {
     }
     drawTraversalDebug(ctx);
     drawOptionalDetourDebug(ctx);
+    drawTopologyT1Debug(ctx);
 
     ctx.restore();
   }
