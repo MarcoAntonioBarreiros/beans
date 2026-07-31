@@ -1,4 +1,9 @@
 import { createRandom } from './random.js';
+import {
+  createPhaseVerticalPlan,
+  validatePhaseVerticalPlan,
+  verticalBandAt,
+} from './phase-vertical-plan.js';
 import { generateLogicGraph } from './logic.js';
 import { generatePrimitives } from './primitives.js';
 import { generateGeometry } from './geometry.js';
@@ -10,6 +15,14 @@ import { getPrimaryTraversalPlatforms } from './traversal-route.js';
 
 const TAU = Math.PI * 2;
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// Quanto cada passo é puxado para a linha-alvo do plano. 0 seria o ruído puro
+// de hoje; 1 apagaria o relevo local e faria a rota virar uma rampa. Medido:
+// 0.55 leva a corrida sustentada de 2,6 para acima de 4 passos sem perder a
+// variação de degrau a degrau.
+const VERTICAL_PLAN_PULL = 0.68;
 
 function traversalLimits(chunk, primitive, index) {
   const requiresDouble = primitive.requires.includes('doubleJump');
@@ -52,15 +65,35 @@ function traversalLimits(chunk, primitive, index) {
   };
 }
 
-function stabilizeGeometry(candidate, previous, chunk, primitive, index) {
+function stabilizeGeometry(candidate, previous, chunk, primitive, index, verticalPlan = null) {
   const limits = traversalLimits(chunk, primitive, index);
   const previousEnd = previous.x + previous.w;
   const rawGap = candidate.x - previousEnd;
   const rawDeltaY = candidate.y - previous.y;
 
   candidate.x = previousEnd + clamp(rawGap, limits.minGap, limits.maxGap);
-  candidate.y = previous.y + clamp(rawDeltaY, -limits.maxRise, limits.maxDrop);
-  candidate.y = clamp(candidate.y, 235, 565);
+
+  // A faixa vem do plano vertical quando ele existe; sem plano é a faixa fixa
+  // de sempre, e o resultado é byte a byte o de antes.
+  const band = verticalPlan ? verticalBandAt(verticalPlan, index) : null;
+  const floorY = band ? band.top : 235;
+  const ceilingY = band ? band.bottom : 565;
+
+  // A ORDEM importa. Primeiro mira a faixa, depois aplica o limite do passo:
+  // assim o passo nunca excede a física, e quando a faixa se afasta mais do que
+  // um salto alcança, a rota leva vários chunks para chegar lá — que é
+  // exatamente a corrida sustentada que faltava.
+  // Limitar o passo À faixa não bastava: a faixa tem 100 px de altura e o passo
+  // médio da fase tem 81 px, então o ruído continuava mandando e a rota
+  // serpenteava DENTRO da faixa. O passo agora é puxado em direção à linha-alvo
+  // — o acaso continua escolhendo o relevo local, mas quem decide a direção do
+  // trecho é o plano.
+  const pulled = band
+    ? lerp(previous.y + rawDeltaY, band.target, VERTICAL_PLAN_PULL)
+    : previous.y + rawDeltaY;
+  const desiredY = clamp(pulled, floorY, ceilingY);
+  candidate.y = previous.y + clamp(desiredY - previous.y, -limits.maxRise, limits.maxDrop);
+  if (band) candidate.verticalZoneId = band.zoneId;
   candidate.w = Math.max(candidate.w, limits.minWidth);
   // Espessura uniforme: a faixa antiga (42-88) fazia blocos grossos parecerem
   // muito mais altos do que o topo (onde os pes pousam) realmente esta.
@@ -248,6 +281,10 @@ export function generateLevel(seedString, {
   referenceScreenWorldWidth = 1280,
   referenceScreenWorldHeight = 720,
   suppressTowerSafeFall = false,
+  // Silhueta planejada da rota principal. Desligada por padrão: sem plano, a
+  // geração é exatamente a que está no ar. O fallback do modo topológico não é
+  // um segundo caminho a manter — é a ausência deste.
+  verticalPlan: verticalPlanOption = false,
 } = {}) {
   const rnd = createRandom(seedString);
   const primitives = generatePrimitives();
@@ -271,6 +308,24 @@ export function generateLevel(seedString, {
   });
   const traversalPlans = new Map(selection.plans.map(plan => [plan.logicIndex, plan]));
   const traversalEncounterStats = selection.stats;
+
+  // O plano nasce fora do `rnd` do gerador, com semente própria: assim ligá-lo
+  // ou desligá-lo não desloca a sequência aleatória de tudo o que vem depois, e
+  // a fase clássica continua idêntica à de hoje.
+  let verticalPlan = null;
+  let verticalPlanViolations = null;
+  if (verticalPlanOption) {
+    const requested = verticalPlanOption === true ? {} : verticalPlanOption;
+    verticalPlan = createPhaseVerticalPlan({
+      seedValue: seedString,
+      phase,
+      totalChunks: logic.length,
+      baseY: 500,
+      familyId: requested.familyId || null,
+    });
+    verticalPlanViolations = validatePhaseVerticalPlan(verticalPlan);
+    if (verticalPlanViolations.length) verticalPlan = null;
+  }
 
   let prevPlatform = { x: 50, y: 500, w: 240, h: 100, type: 'root', logicIndex: -1 };
   platforms.push(prevPlatform);
@@ -356,7 +411,7 @@ export function generateLevel(seedString, {
 
     while (attempts < 12 && !accepted) {
       prim = validPrims[Math.floor(rnd() * validPrims.length)];
-      nextPlatform = stabilizeGeometry(generateGeometry(chunk, prevPlatform, prim, rnd), prevPlatform, chunk, prim, i);
+      nextPlatform = stabilizeGeometry(generateGeometry(chunk, prevPlatform, prim, rnd), prevPlatform, chunk, prim, i, verticalPlan);
       accepted = validated(nextPlatform, prevPlatform, prim, chunk, i);
       attempts++;
     }
@@ -506,6 +561,9 @@ export function generateLevel(seedString, {
     particles: [],
     pulses: [],
     debugInfo,
+    verticalPlan,
+    verticalPlanViolations,
+    verticalPlanRequested: Boolean(verticalPlanOption),
     primitives,
     endX,
     cameraMaxX: Math.max(0, endX - 1000),

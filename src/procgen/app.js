@@ -353,6 +353,25 @@ function optionalDetourDebug(level) {
 }
 
 // Painel do §21. Só o modo T1 o produz; o CP2 continua com `optionalDetourDebug`.
+// Painel do T3. O fallback precisa ser BARULHENTO: se um bug fizer o plano
+// falhar sempre, o jogo continua rodando e a fase clássica passa por
+// "variedade" — degradação silenciosa. Aqui ela aparece.
+function phaseSilhouetteDebug(level) {
+  if (!level?.verticalPlanRequested) return '';
+  const plan = level.verticalPlan;
+  if (!plan) {
+    const violations = level.verticalPlanViolations || [];
+    return `\nSILHUETA DA FASE: FALLBACK (fase classica)`
+      + `\n  motivo: ${violations.join(', ') || 'plano nao gerado'}`;
+  }
+  return `\nSILHUETA DA FASE: ${plan.familyId} (${plan.familyLabel})`
+    + `\n  zonas: ${plan.zones.map(zone => `${zone.role}/${zone.verticalIntent}`).join(' > ')}`
+    + `\n  chunks: ${plan.zones.map(zone => `${zone.fromChunk}-${zone.toChunk}`).join(' | ')}`
+    + `\n  Y planejado: ${plan.zones.map(zone => zone.endY).join(' -> ')}`
+    + ` | amplitude ${plan.verticalRange}px`
+    + ` | subidas ${plan.climbZones} descidas ${plan.dropZones}`;
+}
+
 function topologyDetourDebug(level) {
   const detour = (level?.optionalDetours || [])
     .find(entry => entry.implementationStage === 'T1');
@@ -533,7 +552,13 @@ const optionalDetourVariant =
 // O T1 é um modo NOVO e isolado. O CP2 continua chamando exatamente o
 // compositor B2: os dois nunca compartilham resultado.
 const optionalDetourTopologyMode =
-  optionalDetourVariant === 'optional-detour-topology-t1';
+  optionalDetourVariant === 'optional-detour-topology-t1'
+  || optionalDetourVariant === 'phase-topology-t3';
+
+// T3: silhueta planejada da ROTA PRINCIPAL. Sem este modo, `generateLevel` roda
+// exatamente como hoje — o fallback é a ausência do plano, não um segundo
+// caminho a manter.
+const phaseTopologyMode = optionalDetourVariant === 'phase-topology-t3';
 
 const optionalDetourPlaytestMode = [
   'optional-detour-cp1',
@@ -673,6 +698,7 @@ function prepareLevel() {
     referenceScreenWorldWidth: canvas.width,
     referenceScreenWorldHeight: canvas.height,
     suppressTowerSafeFall: optionalDetourPlaytestMode && campaign.phase === 10,
+    verticalPlan: phaseTopologyMode && campaign.phase === 10,
   });
   levelData.optionalDetourPlaytestMode = optionalDetourPlaytestMode;
   const traceGeometry = stage => (
@@ -1524,6 +1550,7 @@ function loop(now) {
         + traversalEncounterDebug(levelData)
         + optionalDetourDebug(levelData)
         + topologyDetourDebug(levelData)
+        + phaseSilhouetteDebug(levelData)
         + `\nNodulação: ${sim.rhizobiumNodulation.siteCount} sítios / ${sim.rhizobiumNodulation.matureCount} maduros / ${sim.rhizobiumNodulation.activeCount} ativos / FBN ${fixation}`
         + (sim.rhizobiumNodulation.incompatibleCount ? ` / ${sim.rhizobiumNodulation.incompatibleCount} sem hospedeiro` : '')
         + `\nTrichoderma: ${sim.trichodermaColonies.followerCount} seguindo / ${sim.trichodermaColonies.colonyCount} colônias / vigor médio ${vigor}%`
