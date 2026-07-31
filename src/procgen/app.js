@@ -377,6 +377,12 @@ function topologyDetourDebug(level) {
     + ` | atribuicoes ${detour.challengeAssignmentAttempts}`
     + ` | sinteses ${detour.geometryAttempts}`
     + ` | falhas ${detour.failureReasons?.length || 0}`
+    + `\nDROP REJOIN: ${detour.dropRejoinDirect ? 'queda direta' : 'INDIRETA'}`
+    + ` | plataformas no corredor ${detour.dropRejoinPlatformCount}`
+    + ` | corredor ${detour.dropCorridorSpan}px`
+    + `\nSEPARACAO MINIMA DA ROTA FACIL: ${detour.minimumPrimaryClearance ?? '-'}px`
+    + ` (contrato ${detour.primaryClearanceContract}px)`
+    + ` | violacoes ${detour.primaryClearanceViolationCount}`
     + `\nASSINATURA: ${JSON.stringify(signature)}`
     + `\n  vaos: ${(detour.intentionalGaps || []).map(gap => gap.kind).join(',') || '-'}`
     + ` | conectores ${detour.connectorCount}`

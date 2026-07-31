@@ -527,6 +527,36 @@ export function createPlatformVisuals({ state }) {
       }
     }
 
+    // Corredor de queda: reserva VAZIA. Desenhado só como contorno e texto —
+    // nada aqui vira colisor, e é justamente por ser vazio que ele existe.
+    const dropCorridor = overlay.dropCorridor;
+    if (dropCorridor) {
+      ctx.setLineDash([14, 8]);
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#ffd75c';
+      ctx.strokeRect(
+        dropCorridor.left,
+        dropCorridor.top,
+        dropCorridor.right - dropCorridor.left,
+        dropCorridor.bottom - dropCorridor.top,
+      );
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#ffd75c';
+      const textX = dropCorridor.left + 10;
+      let textY = dropCorridor.top + 18;
+      const lines = [
+        overlay.dropRejoinDirect
+          ? 'DROP REJOIN — QUEDA DIRETA'
+          : 'DROP REJOIN — QUEDA INDIRETA',
+        `PLATAFORMAS NO CORREDOR: ${overlay.dropRejoinPlatformCount ?? '-'}`,
+        `SEPARACAO MINIMA DA ROTA FACIL: ${overlay.minimumPrimaryClearance ?? '-'} px`,
+      ];
+      for (const line of lines) {
+        ctx.fillText(line, textX, textY);
+        textY += 15;
+      }
+    }
+
     // Vãos intencionais.
     ctx.lineWidth = 2;
     ctx.setLineDash([10, 6]);

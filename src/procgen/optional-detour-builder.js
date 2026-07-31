@@ -5,6 +5,7 @@ import {
 } from './optional-detour-modules.js';
 import { createOptionalDetourContentRequests } from './optional-detour-content.js';
 import {
+  OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE,
   planOptionalDetour,
   primaryRouteGeometryHash,
 } from './optional-detour-planner.js';
@@ -18,7 +19,7 @@ const CAMERA_LOOK_AHEAD = 58;
 const CAMERA_APPROACH_SPEED = 245;
 const CAMERA_VERTICAL_ANCHOR = .61;
 const MIN_PRIMARY_CLEARANCE = 210;
-const MINIMUM_PRE_REJOIN_SEPARATION = 270;
+const MINIMUM_PRE_REJOIN_SEPARATION = OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE;
 const PRE_REJOIN_PROGRESS_LIMIT = .85;
 
 export function cruiseLaneY(plan) {

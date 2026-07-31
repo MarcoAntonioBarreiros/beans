@@ -28,6 +28,7 @@ import {
   MYCORRHIZA_RUNTIME_VERTICAL_LIMIT,
 } from '../src/procgen/optional-detour-challenge-constraints.js';
 import { canTraverseEdge } from '../src/procgen/traversal-edge-physics.js';
+import { OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE } from '../src/procgen/optional-detour-planner.js';
 import { readFileSync } from 'node:fs';
 
 const ABILITIES = Object.freeze([
@@ -117,14 +118,16 @@ test('T1 - a matriz de 32 seeds produz rotas em número comparável ao B2', () =
     });
     if (detour && !detour.compositionFallback) b2Routes++;
   }
+  // O piso caiu de propósito. Depois que o corredor de queda passou a ser vazio
+  // e a separação da rota principal voltou aos 270 px de projeto, sínteses que
+  // antes passavam encostando na rota fácil passaram a ser recusadas. Qualidade
+  // geométrica vale mais que quantidade de bifurcações — uma fase sem desvio é
+  // um resultado aceitável, uma fase com desvio colado na rota de baixo não é.
   assert.ok(
-    ROUTES.length >= 12,
+    ROUTES.length >= 8,
     `T1 sintetizou apenas ${ROUTES.length}/32 rotas`,
   );
-  assert.ok(
-    ROUTES.length >= b2Routes - 3,
-    `T1 ${ROUTES.length} contra B2 ${b2Routes}: diferença acima do tolerado`,
-  );
+  assert.ok(b2Routes > 0, 'o B2 deixou de compor nas mesmas seeds');
 });
 
 test('T1 - DETERMINISMO: mesma seed, mesma topologia, desafio, assinatura e geometria', () => {
@@ -492,5 +495,100 @@ test('T1 - REGRESSÃO: nenhuma fase 0-9 recebe rota topológica', () => {
     });
     assert.equal(detour, null, `fase ${phase} recebeu desvio T1`);
     assert.equal((level.platforms || []).length, before, `fase ${phase} mudou de geometria`);
+  }
+});
+
+test('T1 - QUEDA: drop-rejoin é corredor vazio e a queda é direta', () => {
+  for (const { seed, level, detour } of ROUTES) {
+    const dropZone = detour.zoneResults.find(zone => zone.role === 'drop-rejoin');
+    assert.ok(dropZone, `${seed}: topologia sem zona drop-rejoin`);
+    assert.equal(dropZone.platformCount, 0, `${seed}: drop-rejoin gerou plataforma`);
+    assert.equal(dropZone.reservedDropCorridor, true, `${seed}: corredor não reservado`);
+
+    // Nenhuma plataforma concreta carrega a zona da queda.
+    const tagged = detourPlatforms(level, detour).filter(platform => (
+      String(platform.optionalDetourZoneId || '').includes('drop-rejoin')
+    ));
+    assert.equal(tagged.length, 0, `${seed}: ${tagged.length} plataformas em drop-rejoin`);
+
+    assert.equal(detour.dropRejoinDirect, true, `${seed}: queda não é direta`);
+    assert.equal(detour.dropRejoinPlatformCount, 0, `${seed}: corredor ocupado`);
+    assert.equal(detour.dropCorridorClear, true, `${seed}: corredor não está limpo`);
+    assert.equal(detour.validation.dropRejoinDirect, true);
+    assert.equal(detour.validation.dropRejoinPlatformCount, 0);
+    assert.equal(detour.validation.dropCorridorClear, true);
+
+    // A queda não depende de degrau: a última plataforma opcional é a de
+    // lançamento, e nada opcional existe depois dela.
+    const launch = detourPlatforms(level, detour).find(platform => (
+      platform.platformId === detour.dropLaunchSocket.platformId
+    ));
+    assert.ok(launch, `${seed}: plataforma de lançamento ausente`);
+    const after = detourPlatforms(level, detour).filter(platform => (
+      platform.platformId !== launch.platformId
+      && platform.x >= launch.x + launch.w
+    ));
+    assert.equal(after.length, 0, `${seed}: plataforma depois do lançamento`);
+
+    const rejoin = (level.platforms || []).find(platform => (
+      (platform.platformId || platform.id) === detour.rejoinPlatformId
+    ));
+    assert.ok(
+      canTraverseEdge({ from: launch, to: rejoin, primitives: level.primitives }).valid,
+      `${seed}: queda direta inválida`,
+    );
+  }
+});
+
+test('T1 - SEPARAÇÃO: 270 px acima da rota principal, sem exceção', () => {
+  assert.equal(OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE, 270);
+  for (const { seed, level, detour } of ROUTES) {
+    assert.equal(
+      detour.primaryClearanceContract,
+      OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE,
+      `${seed}: contrato de separação divergente`,
+    );
+    assert.equal(
+      detour.primaryClearanceViolationCount,
+      0,
+      `${seed}: ${detour.primaryClearanceViolationCount} violações de separação`,
+    );
+    assert.ok(
+      detour.minimumPrimaryClearance === null
+        || detour.minimumPrimaryClearance >= OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE,
+      `${seed}: separação mínima ${detour.minimumPrimaryClearance}px`,
+    );
+
+    // Medida de novo a partir da geometria, não do relatório: o acesso tem
+    // validação própria e a rejoin é da rota principal, então ficam de fora.
+    const primary = (level.platforms || []).filter(platform => (
+      platform.routeScope !== 'optional' && Number.isInteger(platform.logicIndex)
+    ));
+    for (const platform of detourPlatforms(level, detour)) {
+      if (platform.platformId === detour.accessLandingId) continue;
+      for (const other of primary) {
+        if (other.x >= platform.x + platform.w || other.x + other.w <= platform.x) continue;
+        if (other.y <= platform.y) continue;
+        assert.ok(
+          other.y - (platform.y + platform.h) >= OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE,
+          `${seed}: ${platform.platformId} a ${Math.round(other.y - (platform.y + platform.h))}px`
+          + ' da rota principal',
+        );
+      }
+    }
+  }
+});
+
+test('T1 - ASSINATURA: as métricas da queda e da separação entram na assinatura', () => {
+  for (const { seed, detour } of ROUTES) {
+    const signature = detour.structuralSignature;
+    assert.equal(signature.dropRejoinDirect, true, seed);
+    assert.equal(signature.dropRejoinPlatformCount, 0, seed);
+    assert.equal(signature.primaryClearanceViolationCount, 0, seed);
+    assert.ok(
+      signature.minimumPrimaryClearance === null
+        || signature.minimumPrimaryClearance >= OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE,
+      seed,
+    );
   }
 });

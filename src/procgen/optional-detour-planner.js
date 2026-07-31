@@ -3,6 +3,13 @@ import { getPrimaryTraversalPlatforms } from './traversal-route.js';
 
 export const REFERENCE_SCREEN_WORLD_WIDTH = 1280;
 export const OPTIONAL_DETOUR_AUTHORED_ENCOUNTER_SPACING = 2;
+// Separação vertical de projeto entre a rota opcional e a rota principal. Não é
+// "não encostar": é o espaço que o personagem precisa para saltar POR BAIXO,
+// pela rota fácil, sem bater na rota de cima. O número já existia aqui como
+// MINIMUM_PRE_REJOIN_SEPARATION e no builder como uma segunda cópia; agora é um
+// só, exportado, porque duas constantes para o mesmo contrato foi exatamente o
+// que deixou o sintetizador T1 usar 48 px sem ninguém notar.
+export const OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE = 270;
 const MIN_START_WIDTH = 160;
 const MIN_REJOIN_WIDTH = 220;
 const WINDOW_TOLERANCE = .15;
@@ -11,7 +18,7 @@ const MINIMUM_PRIMARY_VERTICAL_RANGE = 90;
 const MAXIMUM_ASCENDING_RUN = 3;
 const ACCESS_HORIZONTAL_ADVANCES = Object.freeze([300, 340, 380, 420, 460, 500, 520]);
 const ACCESS_VERTICAL_RISES = Object.freeze([230, 250, 275, 300, 320, 340]);
-const MINIMUM_PRE_REJOIN_SEPARATION = 270;
+const MINIMUM_PRE_REJOIN_SEPARATION = OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE;
 
 function platformCenterX(platform) {
   return platform.x + platform.w / 2;

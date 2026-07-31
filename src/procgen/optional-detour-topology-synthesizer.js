@@ -43,6 +43,7 @@ import {
 import {
   collectOptionalDetourCandidates,
   OPTIONAL_DETOUR_AUTHORED_ENCOUNTER_SPACING,
+  OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE,
   primaryRouteGeometryHash,
 } from './optional-detour-planner.js';
 import { canTraverseEdge } from './traversal-edge-physics.js';
@@ -55,13 +56,14 @@ const PLATFORM_HEIGHT = 54;
 const DEPOSIT_HEIGHT = 210;
 const DEPOSIT_WIDTH = 58;
 const DEPOSIT_RIGHT_INSET = 64;
-// Separação mínima entre uma plataforma da rota opcional e a plataforma da rota
-// principal logo abaixo dela. NÃO é o MIN_PRIMARY_CLEARANCE (210) do builder:
-// aquele vale para o pouso de acesso, que precisa caber no enquadramento da
-// câmera. Aqui o requisito é só não encostar — a rota opcional do B2 também
-// passa perto da principal em vários trechos, e exigir 170 px reprovava
-// candidatos que o B2 aceita.
-const PRIMARY_SEPARATION = 48;
+// Separação vertical exigida entre uma plataforma da rota opcional e a
+// plataforma da rota principal logo abaixo dela.
+//
+// Aqui existia `PRIMARY_SEPARATION = 48`, escolhido para "não encostar". Esse
+// era o erro: 48 px impede a colisão mas não deixa o personagem SALTAR pela
+// rota fácil embaixo — a rota opcional virava um teto. O contrato de projeto
+// sempre foi 270 px, e agora vem do planner em vez de ser um segundo número.
+const PRIMARY_CLEARANCE = OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE;
 const OVERLAP_MARGIN = 10;
 
 export const T1_ATTEMPT_LIMITS = Object.freeze({
@@ -164,16 +166,24 @@ function normalPrimitives(level) {
 // COLOCAÇÃO DE UM PASSO
 // ---------------------------------------------------------------------------
 
-function primarySeparationViolated(platform, primaryRoute) {
+// Devolve a menor folga observada contra a rota principal (Infinity quando não
+// há plataforma primária sob esta). Medir em vez de responder sim/não é o que
+// permite reportar `minimumPrimaryClearance` sem recalcular tudo depois.
+function primaryClearanceOf(platform, primaryRoute) {
+  let minimum = Infinity;
   for (const other of primaryRoute) {
     if (
       other.x >= platform.x + platform.w
       || other.x + other.w <= platform.x
     ) continue;
     if (other.y <= platform.y) continue;
-    if (other.y - (platform.y + platform.h) < PRIMARY_SEPARATION) return true;
+    minimum = Math.min(minimum, other.y - (platform.y + platform.h));
   }
-  return false;
+  return minimum;
+}
+
+function primaryClearanceViolated(platform, primaryRoute) {
+  return primaryClearanceOf(platform, primaryRoute) < PRIMARY_CLEARANCE;
 }
 
 /**
@@ -265,8 +275,8 @@ function placeStep({
       attempted.push(`${recipe.id}:forbidden-bounds`);
       continue;
     }
-    if (primarySeparationViolated(platform, context.primaryRoute)) {
-      attempted.push(`${recipe.id}:primary-separation`);
+    if (primaryClearanceViolated(platform, context.primaryRoute)) {
+      attempted.push(`${recipe.id}:primary-clearance`);
       continue;
     }
     const validation = canTraverseEdge({
@@ -495,8 +505,8 @@ function synthesizePhosphateZone({
       destinationFailure = `phosphate-target-overlap:${offsetIndex}`;
       continue;
     }
-    if (primarySeparationViolated(candidatePlatform, context.primaryRoute)) {
-      destinationFailure = `phosphate-target-primary-separation:${offsetIndex}`;
+    if (primaryClearanceViolated(candidatePlatform, context.primaryRoute)) {
+      destinationFailure = `phosphate-target-primary-clearance:${offsetIndex}`;
       continue;
     }
     // Depois de o depósito cair, a aresta precisa ser saltável: um bloqueio
@@ -780,8 +790,8 @@ function synthesizeMycorrhizaZone({
   if ([...occupied, ...platforms].some(other => rectsIntersect(destination, other))) {
     return { success: false, reason: 'mycorrhiza-target-overlap' };
   }
-  if (primarySeparationViolated(destination, context.primaryRoute)) {
-    return { success: false, reason: 'mycorrhiza-target-primary-separation' };
+  if (primaryClearanceViolated(destination, context.primaryRoute)) {
+    return { success: false, reason: 'mycorrhiza-target-primary-clearance' };
   }
   platforms.push(destination);
 
@@ -981,6 +991,89 @@ function silhouetteMetrics(platforms) {
   };
 }
 
+/**
+ * O corredor de queda é a única parte da rota opcional que existe por AUSÊNCIA.
+ * Validá-lo é confirmar que continua vazio: nenhuma plataforma opcional dentro
+ * dele, nenhum degrau intermediário sustentando a queda, e a aresta direta até
+ * a rota principal ainda válida.
+ */
+export function validateDropRejoinCorridor({
+  fromPlatform,
+  rejoinPlatform,
+  optionalPlatforms = [],
+  primaryRoute = [],
+  primitives = [],
+} = {}) {
+  if (!fromPlatform || !rejoinPlatform) {
+    return {
+      dropRejoinDirect: false,
+      dropRejoinPlatformCount: 0,
+      dropCorridorClear: false,
+      dropLaunchPlatformId: fromPlatform?.platformId || null,
+      dropRejoinPlatformId: rejoinPlatform?.platformId || rejoinPlatform?.id || null,
+      failures: ['missing-drop-sockets'],
+    };
+  }
+  const failures = [];
+  const corridor = {
+    left: fromPlatform.x + fromPlatform.w,
+    right: rejoinPlatform.x,
+    top: Math.min(fromPlatform.y, rejoinPlatform.y) - 40,
+    bottom: Math.max(fromPlatform.y, rejoinPlatform.y) + rejoinPlatform.h,
+  };
+  const inside = optionalPlatforms.filter(platform => (
+    platform.platformId !== fromPlatform.platformId
+    && platform.x < corridor.right
+    && platform.x + platform.w > corridor.left
+    && platform.y + platform.h > corridor.top
+    && platform.y < corridor.bottom
+  ));
+  if (inside.length) failures.push('platformInsideDropCorridor');
+
+  // Nenhuma plataforma opcional depois do lançamento: se existir uma, ela é
+  // uma "aproximação final" e a queda deixa de ser queda.
+  const afterLaunch = optionalPlatforms.filter(platform => (
+    platform.platformId !== fromPlatform.platformId
+    && platform.x >= fromPlatform.x + fromPlatform.w
+  ));
+  if (afterLaunch.length) failures.push('platformAfterDropLaunch');
+
+  const direct = canTraverseEdge({
+    from: fromPlatform,
+    to: rejoinPlatform,
+    primitives,
+  });
+  if (!direct.valid) failures.push('dropRejoinNotDirect');
+
+  // O que se valida aqui é a TRAJETÓRIA INICIAL da queda, não o corredor
+  // inteiro. Uma plataforma primária no meio do caminho não é defeito: ela é a
+  // rota fácil, e cair nela é reencontrar a rota principal — que é o objetivo.
+  // Defeito é a queda ser interrompida logo ao sair da plataforma de
+  // lançamento, porque aí não houve queda nenhuma.
+  const launchWindowRight = corridor.left + (corridor.right - corridor.left) * 0.45;
+  const earlyLanding = primaryRoute.filter(platform => (
+    (platform.platformId || platform.id) !== (rejoinPlatform.platformId || rejoinPlatform.id)
+    && platform.x < launchWindowRight
+    && platform.x + platform.w > corridor.left
+    && platform.y > fromPlatform.y
+    && platform.y < rejoinPlatform.y - 8
+  ));
+  if (earlyLanding.length) failures.push('dropInterruptedAtLaunch');
+
+  const clear = !inside.length && !afterLaunch.length;
+  return {
+    dropRejoinDirect: direct.valid && !failures.length,
+    dropRejoinPlatformCount: inside.length + afterLaunch.length,
+    dropCorridorClear: clear,
+    dropLaunchPlatformId: fromPlatform.platformId,
+    dropRejoinPlatformId: rejoinPlatform.platformId || rejoinPlatform.id,
+    dropCorridorBounds: corridor,
+    dropCorridorSpan: Math.round(corridor.right - corridor.left),
+    primitiveId: direct.passingPrimitiveIds?.[0] || null,
+    failures,
+  };
+}
+
 function validateSynthesis({
   platforms,
   edges,
@@ -989,13 +1082,28 @@ function validateSynthesis({
   challengeId,
   span,
   accessValid,
-  dropRejoinValid,
+  dropRejoin,
+  clearance,
+  zoneResults,
   primaryRouteUnchanged,
 }) {
   const failures = [];
   if (!primaryRouteUnchanged) failures.push('primaryRouteChanged');
   if (!accessValid) failures.push('accessInvalid');
-  if (!dropRejoinValid) failures.push('dropRejoinInvalid');
+  if (!dropRejoin.dropRejoinDirect) failures.push('dropRejoinInvalid');
+  if (dropRejoin.dropRejoinPlatformCount > 0) failures.push('dropCorridorOccupied');
+  if (dropRejoin.dropCorridorClear !== true) failures.push('dropCorridorNotClear');
+  for (const reason of dropRejoin.failures) failures.push(reason);
+  if (clearance.violations > 0) {
+    failures.push(`primaryClearanceViolations:${clearance.violations}`);
+  }
+  if (clearance.minimum < PRIMARY_CLEARANCE) {
+    failures.push(`primaryClearanceBelowContract:${Math.round(clearance.minimum)}`);
+  }
+  const dropZoneResult = (zoneResults || []).find(entry => entry.role === 'drop-rejoin');
+  if (dropZoneResult && dropZoneResult.platformCount !== 0) {
+    failures.push('dropRejoinZoneHasPlatforms');
+  }
   if (metrics.verticalRange < T1_SILHOUETTE_CONTRACTS.minimumVerticalRange) {
     failures.push(`verticalRangeTooSmall:${metrics.verticalRange}`);
   }
@@ -1076,7 +1184,20 @@ function validateSynthesis({
     }
   }
 
-  return { valid: failures.length === 0, failures, coverage: Math.round(coverage * 1000) / 1000 };
+  return {
+    valid: failures.length === 0,
+    failures,
+    coverage: Math.round(coverage * 1000) / 1000,
+    minimumPrimaryClearance: Number.isFinite(clearance.minimum)
+      ? Math.round(clearance.minimum)
+      : null,
+    primaryClearanceViolationCount: clearance.violations,
+    dropRejoinDirect: dropRejoin.dropRejoinDirect,
+    dropRejoinPlatformCount: dropRejoin.dropRejoinPlatformCount,
+    dropCorridorClear: dropRejoin.dropCorridorClear,
+    dropLaunchPlatformId: dropRejoin.dropLaunchPlatformId,
+    dropRejoinPlatformId: dropRejoin.dropRejoinPlatformId,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1182,25 +1303,73 @@ export function synthesizeOptionalDetourTopology({
   // `zone-budget-too-small` e `route-overruns-central-span`. Assim a sobra é
   // absorvida pelas zonas seguintes, e a última sempre termina em centralEndX.
   const zoneWeights = zoneSpans.map(entry => entry.span);
+  // O corredor de queda é reservado ANTES de distribuir o resto. A zona
+  // `drop-rejoin` não é uma zona de geometria: é a largura vazia que separa a
+  // última plataforma opcional da rota principal. Enquanto ela era sintetizada
+  // como movimento, produzia degraus descendentes que colavam na rota de baixo
+  // — o mesmo bloco que o B2 já tinha removido.
+  const dropZoneIndex = topology.zones.findIndex(zone => zone.role === 'drop-rejoin');
+  // O corredor ABSORVE os 300 px que `centralEndX` já reservava antes da
+  // rejoin, em vez de somar-se a eles. Somar foi o primeiro erro desta
+  // correção: a queda passava de 700 px e nenhuma primitiva a vencia.
+  //
+  // O teto de 500 px é físico, não estético: varrendo `canTraverseEdge` de 200
+  // a 1400 px, a maior queda transponível é 530 px caindo 200 e 630 px caindo
+  // 500. 500 fica dentro da margem para qualquer altura de queda da fase.
+  const dropCorridorSpan = dropZoneIndex >= 0
+    ? Math.round(clamp(zoneSpans[dropZoneIndex].span, 300, 500))
+    : 300;
+  const concreteEndX = rejoinPlatform.x - dropCorridorSpan;
+  if (concreteEndX <= centralStartX) {
+    return {
+      success: false,
+      failureReasons: [`drop-corridor-leaves-no-space:${Math.round(dropCorridorSpan)}`],
+      graph,
+    };
+  }
+  const concreteWeights = zoneWeights.map((weight, index) => (
+    index === dropZoneIndex ? 0 : weight
+  ));
+
   for (let index = 0; index < topology.zones.length; index++) {
     const zone = topology.zones[index];
-    const remainingWeight = zoneWeights
-      .slice(index)
-      .reduce((sum, value) => sum + value, 0);
+    const isChallengeZone = zone.id === challengeAssignment.zoneId;
     const cursorRight = index === 0
       ? cursorX
       : cursorPlatform.x + cursorPlatform.w;
-    const remainingSpan = centralEndX - cursorRight;
-    const isChallengeZone = zone.id === challengeAssignment.zoneId;
-    let span = index === topology.zones.length - 1
+
+    if (zone.role === 'drop-rejoin') {
+      // Nenhuma plataforma, nenhum apoio, nenhum conector: só a reserva.
+      zoneResults.push({
+        zoneId: zone.id,
+        role: 'drop-rejoin',
+        verticalIntent: zone.verticalIntent,
+        span: dropCorridorSpan,
+        platformCount: 0,
+        exitPlatformId: cursorPlatform.platformId,
+        challengeId: null,
+        reservedDropCorridor: true,
+      });
+      continue;
+    }
+
+    const remainingWeight = concreteWeights
+      .slice(index)
+      .reduce((sum, value) => sum + value, 0);
+    const remainingSpan = concreteEndX - cursorRight;
+    const isLastConcrete = concreteWeights
+      .slice(index + 1)
+      .every(weight => weight === 0);
+    let span = isLastConcrete
       ? remainingSpan
-      : remainingSpan * (zoneWeights[index] / Math.max(1, remainingWeight));
+      : remainingSpan * (concreteWeights[index] / Math.max(1, remainingWeight));
     if (isChallengeZone) {
       // A zona do desafio tem prioridade sobre a sobra: o vão bloqueado da
       // micorriza tem um piso físico e não negocia. O que ela pode tomar está
       // limitado ao que as zonas seguintes precisam para existir.
       const tailMinimum = topology.zones
         .slice(index + 1)
+        .filter(next => next.role !== 'drop-rejoin')
         .reduce((sum, next) => sum + next.minimumSpan, 0);
       const required = (activeConstraints?.minimumZoneSpan || 0) + 160;
       // A margem de 220 px é a dívida que um passo pode contrair ao arredondar
@@ -1263,10 +1432,10 @@ export function synthesizeOptionalDetourTopology({
   if (!challengeResult) {
     return { success: false, failureReasons: ['challenge-zone-not-synthesized'], graph };
   }
-  if (cursorPlatform.x + cursorPlatform.w > centralEndX + 120) {
+  if (cursorPlatform.x + cursorPlatform.w > concreteEndX + 120) {
     return {
       success: false,
-      failureReasons: [`route-overruns-central-span:${Math.round(cursorPlatform.x + cursorPlatform.w - centralEndX)}`],
+      failureReasons: [`route-overruns-concrete-span:${Math.round(cursorPlatform.x + cursorPlatform.w - concreteEndX)}`],
       graph,
       zoneResults,
     };
@@ -1297,7 +1466,29 @@ export function synthesizeOptionalDetourTopology({
   });
 
   const accessValid = Boolean(accessPlatform.azospirillumLadderDestination);
+  // A silhueta é medida SEM o salto final: a queda até a rota principal é uma
+  // saída, não uma descida da topologia. Contá-la deixaria `dropCount >= 1`
+  // passar de graça em rotas que nunca descem de fato.
   const metrics = silhouetteMetrics([accessPlatform, ...platforms]);
+
+  const dropRejoin = validateDropRejoinCorridor({
+    fromPlatform: cursorPlatform,
+    rejoinPlatform,
+    optionalPlatforms: platforms,
+    primaryRoute: context.primaryRoute,
+    primitives: level.primitives || [],
+  });
+
+  // O acesso tem validação própria (`chooseAccessLanding`) e a rejoin pertence à
+  // rota principal — nenhum dos dois entra nesta medida.
+  const clearances = platforms.map(platform => (
+    primaryClearanceOf(platform, context.primaryRoute)
+  ));
+  const clearance = {
+    minimum: clearances.length ? Math.min(...clearances) : Infinity,
+    violations: clearances.filter(value => value < PRIMARY_CLEARANCE).length,
+  };
+
   const validation = validateSynthesis({
     platforms,
     edges,
@@ -1306,7 +1497,9 @@ export function synthesizeOptionalDetourTopology({
     challengeId: challengeAssignment.challengeId,
     span: availableSpan,
     accessValid,
-    dropRejoinValid: dropValidation.valid,
+    dropRejoin,
+    clearance,
+    zoneResults,
     primaryRouteUnchanged: true,
   });
 
@@ -1342,6 +1535,12 @@ export function synthesizeOptionalDetourTopology({
     dropCount: metrics.dropCount,
     intentionalGapKinds: intentionalGaps.map(gap => gap.kind),
     connectorCount: 0,
+    dropRejoinDirect: dropRejoin.dropRejoinDirect,
+    dropRejoinPlatformCount: dropRejoin.dropRejoinPlatformCount,
+    minimumPrimaryClearance: Number.isFinite(clearance.minimum)
+      ? Math.round(clearance.minimum)
+      : null,
+    primaryClearanceViolationCount: clearance.violations,
   };
 
   return {
@@ -1364,6 +1563,14 @@ export function synthesizeOptionalDetourTopology({
       platform: cursorPlatform,
       rejoinPlatformId: rejoinPlatform.platformId || rejoinPlatform.id,
     },
+    dropRejoin,
+    clearance: {
+      minimum: Number.isFinite(clearance.minimum) ? Math.round(clearance.minimum) : null,
+      violations: clearance.violations,
+      contract: PRIMARY_CLEARANCE,
+    },
+    dropCorridorSpan,
+    concreteEndX,
     zoneResults,
     graph,
     edges,
@@ -1807,6 +2014,13 @@ function buildTopologyDetourRecord({
     exitSocket: synthesis.exitSocket,
     dropLaunchSocket: synthesis.dropLaunchSocket,
     silhouette: synthesis.metrics,
+    dropRejoinDirect: synthesis.dropRejoin.dropRejoinDirect,
+    dropRejoinPlatformCount: synthesis.dropRejoin.dropRejoinPlatformCount,
+    dropCorridorClear: synthesis.dropRejoin.dropCorridorClear,
+    dropCorridorSpan: synthesis.dropRejoin.dropCorridorSpan,
+    minimumPrimaryClearance: synthesis.clearance.minimum,
+    primaryClearanceViolationCount: synthesis.clearance.violations,
+    primaryClearanceContract: synthesis.clearance.contract,
     corridor: synthesis.corridor,
     optionalDetourReservedBounds: occupiedBounds,
     towerSuppressedForOptionalDetourPlaytest: Boolean(
@@ -1827,6 +2041,10 @@ function buildTopologyDetourRecord({
       corridor: synthesis.corridor,
       depositBounds: synthesis.challenge.depositBounds,
       gapBounds: synthesis.challenge.gapBounds,
+      dropCorridor: synthesis.dropRejoin.dropCorridorBounds,
+      dropRejoinDirect: synthesis.dropRejoin.dropRejoinDirect,
+      dropRejoinPlatformCount: synthesis.dropRejoin.dropRejoinPlatformCount,
+      minimumPrimaryClearance: synthesis.clearance.minimum,
     },
     validation: synthesis.validation,
   };
