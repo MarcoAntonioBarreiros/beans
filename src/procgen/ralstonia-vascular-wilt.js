@@ -623,7 +623,62 @@ export function createRalstoniaVascularWilt({ state, entities, inoculants, pseud
     initialized = true;
   }
 
+  /**
+   * INOCULO AMBIENTAL — substitui os focos pre-instalados.
+   *
+   * A fase deixa de nascer com focos escolhidos na geracao. O inoculo CHEGA a
+   * rizosfera da raiz escolhida e comeca no estagio mais precoce que o runtime
+   * ja conhece: `pending`, com carga superficial introdutoria e carga vascular
+   * ZERO. Dai em diante o ciclo e o de sempre — colonizacao da superficie,
+   * procura de porta de entrada, e entrada vascular SOMENTE se a prevencao e o
+   * controle falharem.
+   *
+   * A chegada nunca cria foco vascular nem pula etapa superficial: e por isso
+   * que `vascularLoad` entra em 0 e `everEnteredVascular` fica falso.
+   */
+  function introduceEnvironmentalInoculum({ targetRoot = null, x = null, source = 'arrival' } = {}) {
+    const root = targetRoot || eligibleRoots()[0];
+    if (!root) return null;
+    if (!initialized) {
+      // Sem `seedFoci` a lista nem existe: a chegada monta o minimo e segue.
+      foci.length = 0;
+      spreadEvents.length = 0;
+      random = random || createRandom(
+        `${state.campaign?.seed || state.level?.seed || 'ralstonia'}:ralstonia-foci`,
+      );
+      state.level.ralstoniaFoci = foci;
+      state.level.ralstoniaSpreadEvents = spreadEvents;
+      initialized = true;
+    }
+    const focus = createFocus({
+      root,
+      role: 'environmental',
+      surfaceLoad: CONFIG.introductoryFocusSurfaceLoad,
+      // Zero, e este zero e o ponto todo desta etapa.
+      vascularLoad: 0,
+      woundOpening: CONFIG.preventionFocusWoundOpening,
+      source,
+    });
+    if (!focus) return null;
+    if (Number.isFinite(x)) focus.x = x;
+    focus.arrivalSource = source;
+    return focus;
+  }
+
   function initialize() {
+    // As chegadas dinamicas assumem a primeira geracao: sem elas, `seedFoci`
+    // continua sendo quem povoa a fase.
+    if (state.level?.dynamicPathogenArrival) {
+      foci.length = 0;
+      spreadEvents.length = 0;
+      state.level.ralstoniaFoci = foci;
+      state.level.ralstoniaSpreadEvents = spreadEvents;
+      random = createRandom(
+        `${state.campaign?.seed || state.level?.seed || 'ralstonia'}:ralstonia-foci`,
+      );
+      initialized = true;
+      return;
+    }
     seedFoci();
   }
 
@@ -1388,7 +1443,7 @@ export function createRalstoniaVascularWilt({ state, entities, inoculants, pseud
 
   function update(dt) {
     if (state.gameState !== 'play') return;
-    if (!initialized) seedFoci();
+    if (!initialized) initialize();
 
     // Uma passada global de ferro antes dos focos: consumo único por colônia.
     // Só foco ATIVO gera demanda contínua e consome ferro. Em `warning` a doença
@@ -2098,6 +2153,8 @@ export function createRalstoniaVascularWilt({ state, entities, inoculants, pseud
   };
 
   return {
+    introduceEnvironmentalInoculum,
+    get foci() { return foci; },
     get focusCount() { return foci.filter(focus => !focus.neutralized).length; },
     get activeFocusCount() {
       return foci.filter(focus => focus.activationState === 'active' && !focus.neutralized).length;

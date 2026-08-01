@@ -1,3 +1,4 @@
+import { createRandom } from './random.js';
 import { W } from '../core/constants.js';
 import { organismSprites } from '../render/organism-sprites.js';
 import { createRootHealthGameplay } from './root-health-gameplay.js';
@@ -94,7 +95,10 @@ export function createMeloidogyneLifecycle({ state, entities }) {
     for (const p of chosen) addEggMass(p, p.x + p.w * (.28 + hash(p, 29) * .44), 0, null, true);
   }
 
+  let arrivalCount = 0;
+
   function clear() {
+    arrivalCount = 0;
     rootGameplay.clear();
     eggs.length = juveniles.length = galls.length = 0;
     for (const p of state.level.platforms || []) {
@@ -107,8 +111,15 @@ export function createMeloidogyneLifecycle({ state, entities }) {
   function reset() {
     eggs.length = juveniles.length = galls.length = 0;
     eggId = juvenileId = gallId = 1; lastToast = -Infinity;
+    arrivalCount = 0;
     for (const p of roots()) prepareRoot(p);
-    expose(); seedInfestation(); rootGameplay.reset();
+    expose();
+    // A fase NAO nasce mais infestada. A primeira geracao chega por
+    // `introduceJ2Arrival`, sob controle da pressao. `seedInfestation` fica
+    // para quem desligar as chegadas dinamicas — e para as fases que ainda
+    // dependem dela.
+    if (!state.level?.dynamicPathogenArrival) seedInfestation();
+    rootGameplay.reset();
   }
 
   function spawnJ2(mass) {
@@ -124,6 +135,52 @@ export function createMeloidogyneLifecycle({ state, entities }) {
     });
     entities.burst(mass.x, mass.y - 8, '#fff0cf', 8, 58);
     return true;
+  }
+
+  /**
+   * CHEGADA EXTERNA DE J2 — substitui a infestação pré-instalada.
+   *
+   * A fase deixa de nascer com massas de ovos nas plataformas. A primeira
+   * geração entra por aqui: alguns J2 no SOLO, fora da raiz, já no estado
+   * `seeking` — o mesmo em que um J2 recém-eclodido fica. Daí em diante nada
+   * muda: eles procuram raiz, penetram, migram, formam sítio de alimentação,
+   * galha, fêmea, e as fêmeas põem massas. O ciclo continua inteiro; só o
+   * ponto de entrada mudou.
+   */
+  function introduceJ2Arrival({ targetRoot = null, x = null, count = null, source = 'arrival' } = {}) {
+    const root = targetRoot || roots()[0];
+    if (!root) return null;
+    prepareRoot(root);
+    const originX = Number.isFinite(x) ? x : root.x + root.w / 2;
+    // Determinístico pela seed da fase: quantidade, posição e direção saem do
+    // mesmo lugar, então a mesma seed produz a mesma chegada.
+    const random = createRandom(
+      `${state.campaign?.seed || state.level?.seed || 'melo'}:j2-arrival:${arrivalCount++}`,
+    );
+    const wanted = Number.isInteger(count) ? count : 2 + Math.floor(random() * 2);
+    const created = [];
+    for (let index = 0; index < wanted; index++) {
+      if (juveniles.length >= 18) break;
+      const angle = -Math.PI / 2 + (random() - .5) * 1.2;
+      const juvenile = {
+        id: `melo-j2-${juvenileId++}`, generation: 0,
+        // No SOLO, abaixo da superfície da raiz: o J2 chega de fora.
+        x: originX + (random() - .5) * 90,
+        y: root.y + 26 + random() * 18,
+        vx: Math.cos(angle) * (18 + random() * 16),
+        vy: Math.sin(angle) * (18 + random() * 12),
+        state: 'seeking', targetRoot: null, targetX: originX, progress: 0,
+        age: 0, retarget: 0, cooldown: 0, phase: random() * TAU, alive: true,
+        trichodermaCaught: false, trichodermaLysis: 0,
+        arrivalSource: source,
+      };
+      juveniles.push(juvenile);
+      created.push(juvenile);
+      entities.burst(juvenile.x, juvenile.y, '#e6d2a0', 6, 48);
+    }
+    if (!created.length) return null;
+    expose();
+    return { targetRoot: root, x: originX, count: created.length, juveniles: created, source };
   }
 
   function updateEggs(dt) {
@@ -477,6 +534,7 @@ export function createMeloidogyneLifecycle({ state, entities }) {
     get stressedRootCount() { return rootGameplay.stressedCount; },
     get compromisedRootCount() { return rootGameplay.compromisedCount; },
     get collapsedRootCount() { return rootGameplay.collapseCount; },
+    introduceJ2Arrival,
     get eggMasses() { return eggs; }, get juveniles() { return juveniles; }, get galls() { return galls; },
     clear, reset, update, render,
   };

@@ -9,6 +9,7 @@ import {
 } from './campaign-manifest.js';
 import { PLAYER_SKINS, PLAYER_SKIN_STORAGE_KEY, resolvePlayerSkin } from '../render/player-skins.js';
 import { PATHOGEN_PRESSURE_DEFAULTS } from './pathogen-pressure.js';
+import { PATHOGEN_ARRIVAL_DEFAULTS } from './pathogen-arrival.js';
 import {
   PLAYER_TUNING_LIMITS, getPlayerTuning, resetPlayerTuning, setPlayerTuning,
 } from '../render/player-skin-tuning.js';
@@ -251,6 +252,26 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
         <button type="button" data-pressure-defaults>Restaurar padrões da pressão</button>
         <pre data-pressure-readout style="margin:8px 0 0; padding:8px; border-radius:8px; background:#04181bcc; color:#cdefe9; font:11px/1.45 ui-monospace,Consolas,monospace; white-space:pre-wrap;">sem leitura</pre>
       </fieldset>
+      <fieldset><legend>Chegadas de patógeno</legend>
+        <div class="resources">
+          <label>Safe (s)<input data-arrival="safeMeanIntervalSeconds" type="number" min="1" step="5"></label>
+          <label>Moderate (s)<input data-arrival="moderateMeanIntervalSeconds" type="number" min="1" step="5"></label>
+          <label>High (s)<input data-arrival="highMeanIntervalSeconds" type="number" min="1" step="5"></label>
+          <label>Critical (s)<input data-arrival="criticalMeanIntervalSeconds" type="number" min="1" step="5"></label>
+          <label>Cooldown (s)<input data-arrival="minimumCooldownSeconds" type="number" min="0" step="1"></label>
+          <label>Aviso (s)<input data-arrival="warningSeconds" type="number" min="0" step="1"></label>
+          <label>Máx. ameaças<input data-arrival="maximumActiveThreats" type="number" min="1" step="1"></label>
+          <label>Máx. por espécie<input data-arrival="maximumActivePerPathogen" type="number" min="1" step="1"></label>
+        </div>
+        <div class="resources">
+          <button type="button" data-arrival-force="meloidogyne">Forçar Meloidogyne</button>
+          <button type="button" data-arrival-force="ralstonia">Forçar Ralstonia</button>
+          <button type="button" data-arrival-cancel>Cancelar aviso</button>
+          <button type="button" data-arrival-clear>Limpar diagnóstico</button>
+        </div>
+        <button type="button" data-arrival-defaults>Restaurar padrões das chegadas</button>
+        <pre data-arrival-readout style="margin:8px 0 0; padding:8px; border-radius:8px; background:#04181bcc; color:#cdefe9; font:11px/1.45 ui-monospace,Consolas,monospace; white-space:pre-wrap;">sem leitura</pre>
+      </fieldset>
       <fieldset><legend>Raiz dependente de FBN</legend>
         <label><span><input data-nitrogen="enabled" type="checkbox" style="width:auto"> Ativada</span></label>
         <div class="resources">
@@ -338,6 +359,10 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
       for (const key of ['exudates', 'crystals', 'checkpoints']) {
         panel.querySelector(`[data-resource="${key}"]`).value = next.resources?.[key] ?? '';
       }
+      for (const key of Object.keys(PATHOGEN_ARRIVAL_DEFAULTS)) {
+        const field = panel.querySelector(`[data-arrival="${key}"]`);
+        if (field) field.value = next.pathogenArrival?.[key] ?? PATHOGEN_ARRIVAL_DEFAULTS[key];
+      }
       for (const key of Object.keys(PATHOGEN_PRESSURE_DEFAULTS)) {
         const field = panel.querySelector(`[data-pressure="${key}"]`);
         if (field) field.value = next.pathogenPressure?.[key] ?? PATHOGEN_PRESSURE_DEFAULTS[key];
@@ -386,6 +411,12 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
         allowedOrganisms: checked('[data-organisms]'),
         allowedPathogens: checked('[data-pathogens]'),
         resources: { exudates: resource('exudates'), crystals: resource('crystals'), checkpoints: resource('checkpoints') },
+        pathogenArrival: Object.fromEntries(
+          Object.keys(PATHOGEN_ARRIVAL_DEFAULTS).map(key => {
+            const raw = Number(panel.querySelector(`[data-arrival="${key}"]`)?.value);
+            return [key, Number.isFinite(raw) ? raw : PATHOGEN_ARRIVAL_DEFAULTS[key]];
+          }),
+        ),
         pathogenPressure: Object.fromEntries(
           Object.keys(PATHOGEN_PRESSURE_DEFAULTS).map(key => {
             const raw = Number(panel.querySelector(`[data-pressure="${key}"]`)?.value);
@@ -539,6 +570,7 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
       if (event.ctrlKey && event.code === 'Enter') { event.preventDefault(); runApply(); }
     });
     mountPressureReadout(panel, windowObject);
+    mountArrivalReadout(panel, windowObject);
     return panel;
   }
 
@@ -605,6 +637,80 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
         `basal              : ${round(reading.basalPressure)}`,
         `PRESSAO TOTAL      : ${round(reading.totalPressure)}  [${reading.pressureBand}]`,
         'ultimas aplicacoes :',
+        history,
+      ].join('\n');
+    };
+    render();
+    const timer = windowObject.setInterval(render, 250);
+    windowObject.addEventListener?.('beforeunload', () => windowObject.clearInterval(timer));
+  }
+
+  // DIAGNOSTICO AO VIVO DAS CHEGADAS, e os atuadores de teste. As chegadas
+  // forcadas usam `forceArrival`, que passa pelas MESMAS APIs e pelos mesmos
+  // estagios da chegada por pressao — o Lab encurta a espera, nao cria um
+  // segundo caminho.
+  function mountArrivalReadout(panel, windowObject) {
+    const readout = panel.querySelector('[data-arrival-readout]');
+    if (!readout) return;
+    const arrival = () => windowObject.miguelitoPathogenArrival || null;
+
+    for (const key of Object.keys(PATHOGEN_ARRIVAL_DEFAULTS)) {
+      panel.querySelector(`[data-arrival="${key}"]`)?.addEventListener('change', event => {
+        const value = Number(event.target.value);
+        if (Number.isFinite(value)) arrival()?.configure({ [key]: value });
+      });
+    }
+    panel.querySelector('[data-arrival-defaults]')?.addEventListener('click', () => {
+      for (const [key, value] of Object.entries(PATHOGEN_ARRIVAL_DEFAULTS)) {
+        const field = panel.querySelector(`[data-arrival="${key}"]`);
+        if (field) field.value = value;
+      }
+      arrival()?.restoreDefaults();
+    });
+    for (const button of panel.querySelectorAll('[data-arrival-force]')) {
+      button.addEventListener('click', () => {
+        arrival()?.forceArrival(button.dataset.arrivalForce);
+      });
+    }
+    panel.querySelector('[data-arrival-cancel]')?.addEventListener('click', () => {
+      arrival()?.cancelWarning();
+    });
+    panel.querySelector('[data-arrival-clear]')?.addEventListener('click', () => {
+      arrival()?.clearDiagnostics();
+    });
+
+    const render = () => {
+      const reading = windowObject.miguelitoSim?.state?.level?.pathogenArrival;
+      if (!reading) {
+        readout.textContent = 'sem leitura (fase não iniciada)';
+        return;
+      }
+      const round = value => (Math.round(Number(value) * 100) / 100).toFixed(2);
+      const warning = reading.warning
+        ? `${reading.warning.pathogen} em c${reading.warning.targetRoot?.logicIndex ?? '?'}`
+          + ` x=${Math.round(reading.warning.targetX)}`
+          + ` faltam ${round(reading.warning.timeRemaining)}s`
+          + ` (${reading.warning.source}${reading.warning.tutorial ? ', didatica' : ''})`
+        : 'nenhum';
+      const history = (reading.eventHistory || []).slice(-5).reverse()
+        .map(entry => `    ${entry.kind} ${entry.pathogen || ''} c${entry.logicIndex ?? '?'} t=${round(entry.phaseTime)}s`)
+        .join('\n') || '    (nenhum)';
+      readout.textContent = [
+        `pressao total      : ${round(reading.totalPressure)}  [${reading.pressureBand}]`,
+        `progresso          : ${round(reading.arrivalProgress)} / ${round(reading.currentThreshold)}`,
+        `intervalo medio    : ${round(reading.currentMeanInterval)}s`,
+        `cooldown           : ${round(reading.cooldownRemaining)}s`,
+        `elegiveis          : ${(reading.eligiblePathogens || []).join(', ') || 'nenhum'}`,
+        `ameacas ativas     : ${reading.activeThreatCount}`
+          + ` (melo ${reading.activeByPathogen?.meloidogyne ?? 0},`
+          + ` ralstonia ${reading.activeByPathogen?.ralstonia ?? 0})`,
+        `aviso              : ${warning}`,
+        `chegadas           : ${reading.totalArrivals}`
+          + ` (melo ${reading.arrivalsByPathogen?.meloidogyne ?? 0},`
+          + ` ralstonia ${reading.arrivalsByPathogen?.ralstonia ?? 0})`,
+        `exposicao didatica : ${reading.tutorialPathogen || 'nenhuma nesta fase'}`
+          + ` — ${reading.tutorialArrivalCompleted ? 'feita' : 'pendente'}`,
+        'ultimos eventos    :',
         history,
       ].join('\n');
     };

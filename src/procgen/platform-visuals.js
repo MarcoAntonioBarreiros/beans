@@ -508,6 +508,52 @@ export function createPlatformVisuals({ state }) {
     ctx.restore();
   }
 
+  // AVISO DE CHEGADA DE PATOGENO
+  //
+  // Diferente dos overlays de debug: este e do JOGO, e aparece sempre. Durante
+  // `warningSeconds` o jogador ve ONDE o patogeno vai chegar e tem tempo de
+  // preparar ou reforcar a prevencao — a chegada e garantida, a infeccao nao.
+  //
+  // Segue a raiz: le a posicao dela a cada quadro em vez de guardar um x, para
+  // o aviso nao ficar apontando para onde a raiz estava.
+  function drawPathogenArrivalWarning(ctx) {
+    const warning = state.level.pathogenArrival?.warning;
+    if (!warning) return;
+    const root = warning.targetRoot;
+    if (!root) return;
+    const centerX = root.x + root.w / 2;
+    const topY = root.y;
+    const total = Math.max(0.001, state.level.pathogenArrival.settings?.warningSeconds || 5);
+    const remaining = Math.max(0, warning.timeRemaining);
+    const urgency = 1 - remaining / total;
+    const pulse = 0.55 + Math.sin(state.time * 9) * 0.28;
+    const color = warning.pathogen === 'ralstonia' ? '#ff7a6b' : '#ffc46b';
+
+    ctx.save();
+    ctx.globalAlpha = 0.28 + urgency * 0.34;
+    ctx.fillStyle = color;
+    // Halo no solo, logo abaixo da raiz: e de la que o inoculo vem.
+    ctx.beginPath();
+    ctx.ellipse(centerX, topY + 26, root.w * (0.42 + urgency * 0.2), 20 + urgency * 10, 0, 0, TAU);
+    ctx.fill();
+
+    ctx.globalAlpha = 0.55 + pulse * 0.45;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2 + urgency * 2;
+    ctx.setLineDash([9, 7]);
+    ctx.strokeRect(root.x - 6, topY - 10, root.w + 12, root.h + 20);
+    ctx.setLineDash([]);
+
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = color;
+    ctx.font = '700 13px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    const nome = warning.pathogen === 'ralstonia' ? 'Ralstonia' : 'Meloidogyne';
+    ctx.fillText(`${nome} se aproximando — ${remaining.toFixed(1)}s`, centerX, topY - 22);
+    ctx.textAlign = 'left';
+    ctx.restore();
+  }
+
   // Overlay do §21. Desenha limites de zona, nós do grafo, arestas normais, a
   // aresta bloqueada, o vão intencional e a saída por queda. Nada aqui cria
   // colisor: é só `ctx`.
@@ -668,6 +714,7 @@ export function createPlatformVisuals({ state }) {
     drawOptionalDetourDebug(ctx);
     drawTopologyT1Debug(ctx);
     drawAscentGateDebug(ctx);
+    drawPathogenArrivalWarning(ctx);
 
     ctx.restore();
   }

@@ -63,6 +63,10 @@ import { createTrichodermaMeloidogyneControl } from './trichoderma-meloidogyne-c
 import { createTrichodermaRhizoctoniaControl } from './trichoderma-rhizoctonia-control.js';
 import { createRalstoniaVascularWilt } from './ralstonia-vascular-wilt.js';
 import {
+  createPathogenArrival,
+  PATHOGEN_ARRIVAL_DEFAULTS,
+} from './pathogen-arrival.js';
+import {
   advanceCampaignPhase,
   campaignPhaseSeed,
   // `campaignManifest` completo: o preload precisa da união das fases já
@@ -702,6 +706,17 @@ const ralstoniaControl = createRalstoniaVascularWilt({
   inoculants: sim.beneficialInoculants,
   pseudomonas: sim.pseudomonasSiderophores,
 });
+// Chegadas dinamicas de patogeno. Vive aqui, e nao no simulador, porque a
+// Ralstonia e um sistema do app: o controlador precisa dos DOIS ciclos.
+const pathogenArrival = createPathogenArrival({
+  state: sim.state,
+  systems: {
+    meloidogyneLifecycle: sim.meloidogyneLifecycle,
+    ralstoniaControl,
+  },
+});
+window.miguelitoPathogenArrival = pathogenArrival;
+
 const objectiveEvaluator = createCampaignObjectiveEvaluator({
   state: sim.state,
   systems: {
@@ -847,6 +862,10 @@ function prepareLevel() {
       : false,
   });
   levelData.optionalDetourPlaytestMode = optionalDetourPlaytestMode;
+  // Marca lida por `meloidogyne-lifecycle` e `ralstonia-vascular-wilt` no
+  // reset: com ela ligada, nenhum dos dois povoa a fase por conta propria — a
+  // primeira geracao chega pelo controlador.
+  levelData.dynamicPathogenArrival = true;
   const traceGeometry = stage => (
     campaign.phase === 3 ? recordRouteGeometryStage(levelData, stage) : null
   );
@@ -1064,7 +1083,11 @@ function prepareLevel() {
   if (phaseLab.enabled && phaseLab.config?.pathogenPressure) {
     sim.pathogenPressure?.configure(phaseLab.config.pathogenPressure);
   }
+  if (phaseLab.enabled && phaseLab.config?.pathogenArrival) {
+    pathogenArrival.configure(phaseLab.config.pathogenArrival);
+  }
   sim.pathogenPressure?.publish();
+  pathogenArrival.publish();
 }
 
 // Saúde da raiz como feedback central: as raízes começam DANIFICADAS e só sobem
@@ -1172,6 +1195,7 @@ function initGame({ announce = false } = {}) {
   trichodermaRhizoctoniaControl.reset();
   trichodermaMeloidogyneControl.reset();
   ralstoniaControl.reset();
+  pathogenArrival.reset();
   sim.state.campaign = campaign;
   // Nao reinicia audio: `setPhase` compara a faixa mapeada com a que ja toca e
   // so faz crossfade quando muda. Reset da campanha nao recria contexto nem
@@ -1607,6 +1631,7 @@ function loop(now) {
         trichodermaRhizoctoniaControl.update(frameDt);
         trichodermaMeloidogyneControl.update(frameDt);
         ralstoniaControl.update(frameDt);
+        pathogenArrival.update(frameDt);
         maybeAdvanceCampaign();
         cameraView.update(frameDt);
       },
