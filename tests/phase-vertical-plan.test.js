@@ -15,9 +15,15 @@ import {
 import { OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE } from '../src/procgen/optional-detour-planner.js';
 import { createPhaseTenTopologyDetour } from '../src/procgen/optional-detour-topology-synthesizer.js';
 import { generateCampaignEncounters } from '../src/procgen/campaign-encounters.js';
+import { createPhosphateDepositAt } from '../src/procgen/phosphate-solubilization.js';
 import {
   ASCENT_GATE_MINIMUM_CHUNK,
   AZO_ASCENT_RISE_RANGE,
+  MYCORRHIZA_BRIDGE_GAP_RANGE,
+  MYCORRHIZA_BRIDGE_MAX_DELTA,
+  plannedRouteGates,
+  ROUTE_GATE_KINDS,
+  ROUTE_GATE_REQUIRED_ABILITY,
   createPhaseVerticalPlan,
   PHASE_SILHOUETTE_CONTRACTS,
   PHASE_SILHOUETTE_FAMILY_IDS,
@@ -500,6 +506,131 @@ test('portão - o plano não põe dois portões colados', () => {
       assert.ok(
         gates[index].chunkIndex - gates[index - 1].chunkIndex >= 3,
         `${seed}: portões a menos de 3 chunks`,
+      );
+    }
+  }
+});
+
+
+const ALL_GATES = SEEDS.map(seed => {
+  const level = phaseTen(seed, { verticalPlan: { gateKinds: ROUTE_GATE_KINDS } });
+  return { seed, level };
+});
+
+test('portão - os três tipos convivem; o Azo SOMA, não substitui', () => {
+  // Foi exatamente isto que faltou na primeira rodada: só a escada entrou na
+  // rota principal, e o jogador reportou "todos os desafios viraram Azo".
+  const counts = new Map();
+  let seedsWithTwoKinds = 0;
+  for (const entry of ALL_GATES) {
+    const kinds = new Set((entry.level.routeGates || []).map(gate => gate.kind));
+    if (kinds.size >= 2) seedsWithTwoKinds++;
+    for (const kind of kinds) counts.set(kind, (counts.get(kind) || 0) + 1);
+  }
+  for (const kind of ROUTE_GATE_KINDS) {
+    assert.ok(
+      (counts.get(kind) || 0) >= 3,
+      `${kind} apareceu em só ${counts.get(kind) || 0} de ${SEEDS.length} seeds`,
+    );
+  }
+  assert.ok(
+    seedsWithTwoKinds >= SEEDS.length * 0.5,
+    `só ${seedsWithTwoKinds} seeds com dois tipos ou mais`,
+  );
+});
+
+test('portão - a ponte cabe no que o runtime de micorriza aceita', () => {
+  // `findBridgeTarget` recusa alvo com vão < 58 ou |dy| > 68 quando a fase roda
+  // em `horizontalOnly` — que é o caso da 10. Um vão fora disso produziria um
+  // portão que a ponte nunca fecha.
+  let bridges = 0;
+  for (const entry of ALL_GATES) {
+    for (const gate of (entry.level.routeGates || []).filter(g => g.kind === 'mycorrhizaBridge')) {
+      bridges++;
+      const gap = Math.round(gate.destination.x - (gate.host.x + gate.host.w));
+      const dy = Math.abs(gate.destination.y - gate.host.y);
+      assert.ok(
+        gap >= MYCORRHIZA_BRIDGE_GAP_RANGE[0] && gap <= MYCORRHIZA_BRIDGE_GAP_RANGE[1],
+        `${entry.seed}: vão ${gap}px fora da faixa`,
+      );
+      // Vão máximo saltável medido: 430 a 480 px. Abaixo disso a ponte é enfeite.
+      assert.ok(gap > 490, `${entry.seed}: vão ${gap}px é saltável`);
+      assert.ok(dy <= MYCORRHIZA_BRIDGE_MAX_DELTA, `${entry.seed}: desnível ${dy}px passa do teto da ponte`);
+      assert.ok(gate.host.bridgeGateHost, `${entry.seed}: hospedeiro sem marca`);
+    }
+  }
+  assert.ok(bridges >= 8, `só ${bridges} pontes em ${SEEDS.length} seeds`);
+});
+
+test('portão - a parede de fosfato fecha mesmo a passagem', () => {
+  let walls = 0;
+  for (const entry of ALL_GATES) {
+    for (const gate of (entry.level.routeGates || []).filter(g => g.kind === 'phosphateWall')) {
+      walls++;
+      // A parede não muda a rota: hospedeiro e destino são a mesma plataforma.
+      assert.equal(gate.host, gate.destination, `${entry.seed}: parede deslocou a rota`);
+      assert.ok(gate.host.phosphateWallGate, `${entry.seed}: hospedeiro sem marca`);
+      const deposit = createPhosphateDepositAt({
+        level: entry.level,
+        hostPlatform: gate.host,
+        logicIndex: gate.chunkIndex,
+        authored: true,
+        id: `${gate.id}-deposit`,
+      });
+      assert.ok(deposit, `${entry.seed}: depósito não criado`);
+      // 190 px derrota o salto duplo (~175 px de alcance prático).
+      assert.ok(deposit.h >= 190, `${entry.seed}: parede de ${deposit.h}px é saltável`);
+      assert.ok(
+        deposit.x >= gate.host.x && deposit.x + deposit.w <= gate.host.x + gate.host.w + 8,
+        `${entry.seed}: depósito fora do hospedeiro`,
+      );
+    }
+  }
+  assert.ok(walls >= 4, `só ${walls} paredes em ${SEEDS.length} seeds`);
+});
+
+test('portão - sem a habilidade, o tipo correspondente não é pedido', () => {
+  // A regra que vale para a escada vale para os três: um portão sem a
+  // habilidade que o abre é softlock, não desafio.
+  for (const kind of ROUTE_GATE_KINDS) {
+    assert.ok(ROUTE_GATE_REQUIRED_ABILITY[kind], `${kind} sem habilidade declarada`);
+    const others = ROUTE_GATE_KINDS.filter(entry => entry !== kind);
+    for (const seed of SEEDS.slice(0, 6)) {
+      const level = phaseTen(seed, { verticalPlan: { gateKinds: others } });
+      assert.equal(
+        (level.routeGates || []).filter(gate => gate.kind === kind).length,
+        0,
+        `${seed}: ${kind} apareceu sem ser pedido`,
+      );
+    }
+  }
+});
+
+test('portão - a auditoria reconhece a ponte como travessia intencional', () => {
+  for (const entry of ALL_GATES) {
+    const bridges = (entry.level.routeGates || []).filter(g => g.kind === 'mycorrhizaBridge');
+    if (!bridges.length) continue;
+    const audit = auditTraversableRoute(entry.level, { doubleJump: true, dash: true }, {});
+    for (const gate of bridges) {
+      const asFailure = audit.ordinaryFailures
+        .some(failure => failure.nextLogicIndex === gate.destinationLogicIndex);
+      assert.equal(asFailure, false, `${entry.seed}: ponte c${gate.chunkIndex} lida como falha`);
+    }
+    assert.ok(
+      audit.intentionalCrossings.some(crossing => crossing.mechanic === 'mycorrhizaBridgeGate'),
+      `${entry.seed}: nenhuma ponte reconhecida`,
+    );
+  }
+});
+
+test('portão - dois portões nunca ficam colados', () => {
+  for (const seed of SEEDS) {
+    const plan = createPhaseVerticalPlan({ seedValue: seed, phase: 10, totalChunks: 40 });
+    const gates = plannedRouteGates(plan);
+    for (let index = 1; index < gates.length; index++) {
+      assert.ok(
+        gates[index].chunkIndex - gates[index - 1].chunkIndex >= 3,
+        `${seed}: portões a menos de 3 chunks (${gates[index - 1].mechanic}/${gates[index].mechanic})`,
       );
     }
   }

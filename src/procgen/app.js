@@ -15,7 +15,10 @@ import {
 import { applyPhaseFourMycorrhizaIntro } from './phase-four-mycorrhiza-intro.js';
 import { applyPhaseFiveTutorialEncounters, applyPhaseFiveTutorialGeometry } from './phase-five-tutorial.js';
 import { applyPhaseSixTutorialEncounters, applyPhaseSixTutorialGeometry } from './phase-six-tutorial.js';
-import { applyPhaseSevenPhosphateGeometry } from './phosphate-solubilization.js';
+import {
+  applyPhaseSevenPhosphateGeometry,
+  createPhosphateDepositAt,
+} from './phosphate-solubilization.js';
 import { createPhaseTenOptionalDetour } from './optional-detour-composer.js';
 import { createPhaseTenTopologyDetour } from './optional-detour-topology-synthesizer.js';
 import { validateOptionalDetour } from './optional-detour-validator.js';
@@ -49,6 +52,10 @@ import { createPlatformVisuals } from './platform-visuals.js';
 import { createCameraView } from './camera-view.js';
 import { createResponsiveCanvas } from './responsive-canvas.js';
 import { getPrimaryTraversalPlatforms } from './traversal-route.js';
+import {
+  ROUTE_GATE_KINDS,
+  ROUTE_GATE_REQUIRED_ABILITY,
+} from './phase-vertical-plan.js';
 import { synchronizeWorldBounds } from './world-bounds.js';
 import { createRhizoctoniaControl } from './rhizoctonia-control.js';
 import { createTrichodermaMeloidogyneControl } from './trichoderma-meloidogyne-control.js';
@@ -367,23 +374,41 @@ function phaseSilhouetteDebug(level) {
     return `\nSILHUETA DA FASE: FALLBACK (fase classica)`
       + `\n  motivo: ${violations.join(', ') || 'plano nao gerado'}`;
   }
-  const gates = level.ascentGates || [];
-  // Sem escada de Azospirillum não há portão, e isso precisa aparecer: um
-  // playtest sem a habilidade veria uma silhueta mais fraca e não saberia por
-  // quê.
+  // Os TRES tipos de portao no mesmo painel: foi a ausencia dessa visao que
+  // deixou passar uma rodada inteira so com Azospirillum.
+  const gates = level.routeGates || [];
   const ladderOf = gate => (level.azospirillumRootLadders || [])
     .find(ladder => ladder.ascentGateId === gate.id || ladder.host === gate.host) || null;
+  const stateOf = gate => {
+    if (gate.kind === 'azospirillumAscent') {
+      const ladder = ladderOf(gate);
+      if (!ladder) return 'SEM ESCADA';
+      if (ladder.developed) return 'escada madura';
+      return ladder.progress > 0
+        ? `escada ${Math.round(ladder.progress * 100)}%${ladder.paused ? ' pausada' : ''}`
+        : 'aguarda inoculacao';
+    }
+    if (gate.kind === 'mycorrhizaBridge') {
+      const bridge = (level.mycorrhizaStructures || [])
+        .find(structure => structure.source === gate.host || structure.sourcePlatform === gate.host);
+      return bridge ? (bridge.mature ? 'ponte madura' : 'ponte crescendo') : 'aguarda ponte AM';
+    }
+    if (gate.skipped) return `PULADO: ${gate.skipped}`;
+    return gate.deposit?.broken ? 'parede aberta' : 'aguarda pulso de P';
+  };
+  const label = { azospirillumAscent: 'AZO', mycorrhizaBridge: 'AM', phosphateWall: 'P' };
+  const missing = ROUTE_GATE_KINDS
+    .filter(kind => !campaign.unlocks?.[ROUTE_GATE_REQUIRED_ABILITY[kind]])
+    .map(kind => label[kind]);
   const gateLine = gates.length
-    ? `\n  PORTOES DE SUBIDA: ${gates.map(gate => {
-        const ladder = ladderOf(gate);
-        const estado = !ladder ? 'SEM ESCADA'
-          : ladder.developed ? 'madura'
-          : ladder.progress > 0 ? `${Math.round(ladder.progress * 100)}%${ladder.paused ? ' pausada' : ''}`
-          : 'aguarda inoculacao';
-        return `c${gate.chunkIndex}/+${gate.rise}px[${estado}]`;
-      }).join(' ')}`
-    : `\n  PORTOES DE SUBIDA: nenhum`
-      + `${campaign.unlocks?.azospirillumRoots ? ' (nenhuma zona de subida longa o bastante)' : ' — escada de Azospirillum bloqueada'}`;
+    ? `\n  PORTOES DA ROTA: ${gates.map(gate => (
+        `c${gate.chunkIndex}/${label[gate.kind]}`
+        + `${gate.kind === 'azospirillumAscent' ? `+${gate.rise}px` : ''}`
+        + `${gate.kind === 'mycorrhizaBridge' ? `vao${gate.gap}px` : ''}`
+        + `[${stateOf(gate)}]`
+      )).join(' ')}`
+    : `\n  PORTOES DA ROTA: nenhum`
+      + `${missing.length ? ` — habilidades bloqueadas: ${missing.join('/')}` : ' (nenhuma zona serviu)'}`;
   return `\nSILHUETA DA FASE: ${plan.familyId} (${plan.familyLabel})`
     + `\n  zonas: ${plan.zones.map(zone => `${zone.role}/${zone.verticalIntent}`).join(' > ')}`
     + `\n  chunks: ${plan.zones.map(zone => `${zone.fromChunk}-${zone.toChunk}`).join(' | ')}`
@@ -722,6 +747,31 @@ function installFinalGoal(level) {
   level.cameraMaxX = Math.max(0, level.endX - 1000);
 }
 
+// Raiz onde a colônia de Bacillus carrega o pulso que abre a parede de
+// fosfato. Tem de vir ANTES da parede e ter superfície: o jogador carrega ali e
+// dispara depois. Uma raiz longe demais transforma o desafio numa caminhada, e
+// por isso a busca para na terceira plataforma para trás.
+const PHOSPHATE_CHARGER_MAXIMUM_LOOKBACK = 3;
+
+function phosphateChargerPlatform(level, gate) {
+  const route = getPrimaryTraversalPlatforms(level).filter(platform => (
+    Number.isInteger(platform.logicIndex)
+    && !platform.recovery
+    && !platform.final
+    && !platform.encounterInstanceId
+    && !platform.ascentGate
+    && !platform.bridgeGate
+    && !platform.phosphateWallGate
+    && platform.w >= 130
+  ));
+  const before = route.filter(platform => platform.logicIndex < gate.chunkIndex);
+  if (!before.length) return null;
+  const candidate = before[before.length - 1];
+  return gate.chunkIndex - candidate.logicIndex <= PHOSPHATE_CHARGER_MAXIMUM_LOOKBACK
+    ? candidate
+    : null;
+}
+
 function prepareLevel() {
   profile = prepareCampaignGeneration(campaign);
   seed = campaignPhaseSeed(campaign);
@@ -731,8 +781,15 @@ function prepareLevel() {
     suppressTowerSafeFall: optionalDetourPlaytestMode && campaign.phase === 10,
     // Os portões de subida ficam condicionados à escada de Azospirillum: sem a
     // habilidade que os abre, um degrau 280 px acima é softlock, não desafio.
+    // Cada tipo de portão só é pedido se a fase liberou a habilidade que o
+    // abre. Sem isso o portão é softlock, não desafio — e é por isso que a
+    // lista é montada a partir dos unlocks em vez de ser fixa.
     verticalPlan: phaseTopologyMode && campaign.phase === 10
-      ? { ascentGates: Boolean(campaign.unlocks?.azospirillumRoots) }
+      ? {
+          gateKinds: ROUTE_GATE_KINDS.filter(kind => (
+            campaign.unlocks?.[ROUTE_GATE_REQUIRED_ABILITY[kind]]
+          )),
+        }
       : false,
   });
   levelData.optionalDetourPlaytestMode = optionalDetourPlaytestMode;
@@ -809,6 +866,53 @@ function prepareLevel() {
     seedValue: seed,
     phase: campaign.phase,
   });
+  // Portão de ponte: o alvo da ponte é DECLARADO, não procurado. Sem isto o
+  // runtime escolheria qualquer plataforma vizinha dentro do alcance e a ponte
+  // poderia nascer atravessada, contornando o vão em vez de cruzá-lo.
+  // `strictPreferredMycorrhizaTarget` fecha essa porta: ou é este alvo, ou
+  // nenhum.
+  for (const gate of (levelData.routeGates || []).filter(entry => entry.kind === 'mycorrhizaBridge')) {
+    const target = gate.destination;
+    target.platformId ||= `bridge-gate-target-${gate.chunkIndex}`;
+    gate.host.preferredMycorrhizaTargetId = target.platformId;
+    gate.host.strictPreferredMycorrhizaTarget = true;
+  }
+  // Parede de fosfato: o depósito mineral fecha a saída da plataforma e só o
+  // pulso de solubilização abre. A colônia de Bacillus que carrega o pulso vai
+  // numa raiz ANTES da parede — sem ela o portão é intransponível, do mesmo
+  // jeito que a escada sem Azospirillum.
+  for (const gate of (levelData.routeGates || []).filter(entry => entry.kind === 'phosphateWall')) {
+    const charger = phosphateChargerPlatform(levelData, gate);
+    if (!charger) {
+      gate.skipped = 'sem raiz para a colonia de Bacillus';
+      delete gate.host.phosphateWallGate;
+      continue;
+    }
+    charger.type = 'root';
+    levelData.authoredBeneficialColonies = [
+      ...(levelData.authoredBeneficialColonies || []),
+      {
+        id: `${gate.id}-bacillus`,
+        type: 'bacillus',
+        platform: charger,
+        x: charger.x + charger.w * .58,
+        y: charger.y - 8,
+        sourceCount: 5,
+        vigor: 1,
+        growth: 1,
+        rechargeIntensity: .35,
+      },
+    ];
+    gate.deposit = createPhosphateDepositAt({
+      level: levelData,
+      hostPlatform: gate.host,
+      logicIndex: gate.chunkIndex,
+      authored: true,
+      difficulty: 'phase-route-gate',
+      id: `${gate.id}-deposit`,
+    });
+    gate.chargerLogicIndex = charger.logicIndex;
+  }
   // Cada portão de subida vira um pedido AUTORAL de escada. A rota pede a
   // escada onde ela é necessária, em vez de a escada procurar depois um
   // desnível que sirva — era essa procura que fazia a raiz lateral parecer

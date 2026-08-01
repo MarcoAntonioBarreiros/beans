@@ -257,6 +257,45 @@ export const AZO_ASCENT_RISE_RANGE = Object.freeze([240, 330]);
 // c4 sobravam três chunks para as três coisas.
 export const ASCENT_GATE_MINIMUM_CHUNK = 6;
 
+// PORTÕES DA ROTA PRINCIPAL — três tipos, um mecanismo
+// ====================================================
+//
+// Um portão é um passo que a física do salto NÃO vence e que um organismo
+// abre. O Azospirillum foi o primeiro; ele não substitui os outros dois, soma
+// a eles. Cada tipo pede uma geometria diferente, e é por isso que os três
+// convivem na mesma fase:
+//
+//   azospirillumAscent — degrau 240 a 330 px ACIMA. Vence o teto de 92 px por
+//                        passo de `traversalLimits`. Aberto pela escada.
+//   mycorrhizaBridge   — vão largo demais para saltar, e quase sem desnível
+//                        porque o runtime da ponte exige |dy| <= 68 com
+//                        `horizontalOnly`. Aberto pela ponte de hifas.
+//   phosphateWall      — depósito mineral de 190 a 210 px fechando a passagem
+//                        sobre a própria plataforma. Aberto pelo pulso de
+//                        solubilização. Não mexe na altura da rota.
+//
+// Vão máximo saltável medido: 430 a 480 px conforme o desnível. O piso de 520
+// deixa margem para o pior caso — abaixo disso o jogador pula e a ponte vira
+// decoração, que foi o que aconteceu com o fosfato durante toda a campanha.
+export const MYCORRHIZA_BRIDGE_GAP_RANGE = Object.freeze([520, 610]);
+// O runtime da ponte (`findBridgeTarget`) recusa alvo com |dy| > 68. 60 deixa
+// folga para o arredondamento da geometria.
+export const MYCORRHIZA_BRIDGE_MAX_DELTA = 60;
+
+export const ROUTE_GATE_KINDS = Object.freeze([
+  'azospirillumAscent',
+  'mycorrhizaBridge',
+  'phosphateWall',
+]);
+
+// Cada tipo pede a habilidade que o abre. Sem ela o portão é softlock, não
+// desafio — é a mesma regra que já vale para a escada.
+export const ROUTE_GATE_REQUIRED_ABILITY = Object.freeze({
+  azospirillumAscent: 'azospirillumRoots',
+  mycorrhizaBridge: 'mycorrhizaStructures',
+  phosphateWall: 'phosphateSolubilization',
+});
+
 /**
  * Chunks em que a subida deixa de ser saltável e passa a exigir escada.
  *
@@ -309,6 +348,71 @@ export function plannedAscentGates(plan, { minimumZoneRise = 300 } = {}) {
     }
   }
   return gates;
+}
+
+/**
+ * Todos os portões da fase, dos três tipos, já distribuídos.
+ *
+ * A escada vem primeiro porque é a única que EXIGE uma zona específica: sem
+ * uma subida longa, um degrau de 300 px não tem para onde ir. Os outros dois
+ * são geometria local — um vão largo e uma parede — e cabem em qualquer zona,
+ * então preenchem o que sobrou.
+ *
+ * `kinds` existe para o teste poder isolar um tipo, e para uma fase sem a
+ * habilidade correspondente simplesmente não pedir aquele portão.
+ */
+export function plannedRouteGates(plan, {
+  kinds = ROUTE_GATE_KINDS,
+  minimumZoneRise = 300,
+  maximumBridges = 2,
+  maximumWalls = 2,
+  // Distância mínima entre portões, em chunks. Dois desafios colados viram um
+  // desafio só, e sem espaço para respirar entre eles.
+  minimumSpacing = 4,
+} = {}) {
+  if (!plan) return [];
+  const allowed = new Set(kinds);
+  const gates = allowed.has('azospirillumAscent')
+    ? plannedAscentGates(plan, { minimumZoneRise })
+    : [];
+  const free = at => (
+    at >= ASCENT_GATE_MINIMUM_CHUNK
+    && at < plan.totalChunks - 2
+    && !gates.some(gate => Math.abs(gate.chunkIndex - at) < minimumSpacing)
+  );
+
+  // Vários pontos por zona, em vez de só o meio. Com um ponto só, a ponte
+  // ocupava o meio de toda zona livre e a parede não achava mais lugar: em 24
+  // seeds saíram 44 pontes e 2 paredes. O meio continua sendo a primeira
+  // escolha — perto da borda o passo seguinte já negocia a transição para a
+  // próxima zona e a geometria do portão brigaria com ela.
+  const ZONE_OFFSETS = [0.5, 0.3, 0.7, 0.2, 0.8];
+  const spread = (mechanic, limit, build) => {
+    let placed = 0;
+    for (const zone of plan.zones) {
+      if (placed >= limit) break;
+      const span = zone.toChunk - zone.fromChunk;
+      for (const offset of ZONE_OFFSETS) {
+        const at = zone.fromChunk + Math.round(span * offset);
+        if (!free(at)) continue;
+        gates.push({ chunkIndex: at, zoneId: zone.id, mechanic, ...build(zone) });
+        placed++;
+        break;
+      }
+    }
+  };
+
+  if (allowed.has('mycorrhizaBridge')) {
+    spread('mycorrhizaBridge', maximumBridges, () => ({
+      gapRange: MYCORRHIZA_BRIDGE_GAP_RANGE,
+      maximumVerticalDelta: MYCORRHIZA_BRIDGE_MAX_DELTA,
+    }));
+  }
+  if (allowed.has('phosphateWall')) {
+    spread('phosphateWall', maximumWalls, () => ({}));
+  }
+
+  return gates.sort((left, right) => left.chunkIndex - right.chunkIndex);
 }
 
 export function verticalBandAt(plan, index) {

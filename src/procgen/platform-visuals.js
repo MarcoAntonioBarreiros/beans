@@ -460,7 +460,7 @@ export function createPlatformVisuals({ state }) {
   // colisor: é só `ctx`.
   function drawAscentGateDebug(ctx) {
     if (!state.level.traversalDebugVisible) return;
-    const gates = state.level.ascentGates || [];
+    const gates = state.level.routeGates || [];
     if (!gates.length) return;
     ctx.save();
     ctx.font = '600 11px ui-monospace, SFMono-Regular, Consolas, monospace';
@@ -471,8 +471,17 @@ export function createPlatformVisuals({ state }) {
       if (!host || !destination) continue;
       const ladder = (state.level.azospirillumRootLadders || [])
         .find(entry => entry.ascentGateId === gate.id || entry.host === host) || null;
-      const developed = Boolean(ladder?.developed);
-      ctx.strokeStyle = developed ? '#8ef5b0' : '#72e8dd';
+      const developed = gate.kind === 'azospirillumAscent'
+        ? Boolean(ladder?.developed)
+        : gate.kind === 'phosphateWall'
+          ? Boolean(gate.deposit?.broken)
+          : false;
+      // Uma cor por tipo: num print de playtest é isso que diz qual desafio
+      // está na tela sem precisar ler o painel.
+      const idle = gate.kind === 'mycorrhizaBridge' ? '#c99bff'
+        : gate.kind === 'phosphateWall' ? '#ffd75c'
+        : '#72e8dd';
+      ctx.strokeStyle = developed ? '#8ef5b0' : idle;
       ctx.fillStyle = ctx.strokeStyle;
       ctx.lineWidth = 3;
       ctx.setLineDash(developed ? [] : [9, 6]);
@@ -486,11 +495,15 @@ export function createPlatformVisuals({ state }) {
       // apareceu na tela.
       ctx.lineWidth = 2;
       ctx.strokeRect(destination.x, destination.y, destination.w, destination.h);
-      const estado = !ladder ? 'SEM ESCADA'
-        : developed ? 'escada madura'
-        : ladder.progress > 0 ? `escada ${Math.round(ladder.progress * 100)}%`
-        : 'inocular Azospirillum aqui';
-      ctx.fillText(`PORTAO +${gate.rise}px — ${estado}`, x + 8, destination.y - 12);
+      const estado = gate.kind === 'mycorrhizaBridge'
+        ? `PONTE AM ${gate.gap}px — inocular micorriza na borda`
+        : gate.kind === 'phosphateWall'
+          ? `PAREDE DE P — ${developed ? 'aberta' : 'carregar pulso e disparar'}`
+          : !ladder ? `PORTAO +${gate.rise}px — SEM ESCADA`
+            : developed ? `PORTAO +${gate.rise}px — escada madura`
+            : ladder.progress > 0 ? `PORTAO +${gate.rise}px — escada ${Math.round(ladder.progress * 100)}%`
+            : `PORTAO +${gate.rise}px — inocular Azospirillum aqui`;
+      ctx.fillText(estado, x + 8, destination.y - 12);
     }
     ctx.restore();
   }

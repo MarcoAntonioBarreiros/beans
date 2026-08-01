@@ -1,7 +1,8 @@
 import { createRandom } from './random.js';
 import {
   createPhaseVerticalPlan,
-  plannedAscentGates,
+  plannedRouteGates,
+  ROUTE_GATE_KINDS,
   validatePhaseVerticalPlan,
   verticalBandAt,
 } from './phase-vertical-plan.js';
@@ -112,8 +113,19 @@ function stabilizeGeometry(candidate, previous, chunk, primitive, index, vertica
   return candidate;
 }
 
-// PORTÃO DE SUBIDA — geometria autoral, fora do pipeline do chunk
-// ================================================================
+// PORTÕES DA ROTA — geometria autoral, fora do pipeline do chunk
+// ===============================================================
+//
+// Três tipos, um mecanismo. A escada de Azospirillum foi o primeiro; ela SOMA
+// aos outros dois em vez de substituí-los, e é por isso que os três dividem
+// este ramo do laço em vez de cada um ganhar o seu.
+//
+//   azospirillumAscent — degrau alto demais para saltar (240 a 330 px).
+//   mycorrhizaBridge   — vão largo demais para saltar (520 a 610 px), quase
+//                        sem desnível porque o runtime da ponte exige |dy|<=68.
+//   phosphateWall      — a plataforma é comum; o que fecha a passagem é o
+//                        depósito mineral que `app.js` planta sobre ela. Aqui
+//                        só se reserva o espaço e se marca o hospedeiro.
 //
 // A plataforma de um portão NÃO passa por `stabilizeGeometry` nem por
 // `validated`. Não é descuido: é a razão de o portão existir.
@@ -127,7 +139,7 @@ function stabilizeGeometry(candidate, previous, chunk, primitive, index, vertica
 // portão deixa um vão INTRANSPONÍVEL de propósito — quem o abre é a escada de
 // Azospirillum, e `isIntentionalDynamicCrossing` o reconhece para a auditoria
 // não o ler como falha.
-const ASCENT_GATE_HOST_MIN_WIDTH = 168;
+const ROUTE_GATE_HOST_MIN_WIDTH = 168;
 // Vão curto de propósito: o degrau fica quase em cima do hospedeiro, então a
 // escada sobe reta e a silhueta lê como torre, não como rampa. Também mantém
 // `createRecoveryRoots` fora (ela exige vão >= 82 px) — uma raiz de recuperação
@@ -163,6 +175,40 @@ function buildAscentGatePlatform(previous, gate, rnd, index, band) {
     ascentGateId: `azo-ascent-${index}`,
     ascentGateRise: rise,
     ascentGateMechanic: gate.mechanic,
+    verticalZoneId: gate.zoneId,
+  };
+}
+
+// A ponte de hifas atravessa o vão na horizontal, então o desnível tem de ser
+// pequeno: `findBridgeTarget` recusa alvo com |dy| > 68 quando a fase roda em
+// `horizontalOnly`, que é o caso da 10. Um portão de ponte com 200 px de
+// degrau seria construído e mesmo assim intransponível.
+const BRIDGE_GATE_WIDTH_RANGE = Object.freeze([176, 226]);
+
+function buildBridgeGatePlatform(previous, gate, rnd, index, band) {
+  const [minimumGap, maximumGap] = gate.gapRange;
+  const gap = Math.round(lerp(minimumGap, maximumGap, rnd()));
+  const width = Math.round(lerp(BRIDGE_GATE_WIDTH_RANGE[0], BRIDGE_GATE_WIDTH_RANGE[1], rnd()));
+  const limit = gate.maximumVerticalDelta;
+  // O passo segue a faixa do plano, mas dentro do teto da ponte: a silhueta
+  // continua mandando na direção, só que este degrau é quase plano.
+  const planned = band ? band.target - previous.y : 0;
+  const delta = Math.round(clamp(planned, -limit, limit));
+  const y = band
+    ? clamp(previous.y + delta, band.floorLimit + 40, band.ceilingLimit - 40)
+    : previous.y + delta;
+  if (Math.abs(y - previous.y) > limit) return null;
+  return {
+    x: previous.x + previous.w + gap,
+    y,
+    w: width,
+    h: 54,
+    type: 'root',
+    logicIndex: index,
+    bridgeGate: true,
+    bridgeGateId: `myco-bridge-${index}`,
+    bridgeGateGap: gap,
+    bridgeGateMechanic: gate.mechanic,
     verticalZoneId: gate.zoneId,
   };
 }
@@ -416,8 +462,8 @@ export function generateLevel(seedString, {
   // Portões de subida: só existem quando o chamador declara `ascentGates`, e o
   // chamador só declara quando a escada de Azospirillum está liberada. Um
   // portão sem a habilidade que o abre é um softlock, não um desafio.
-  const ascentGateRequests = new Map();
-  const ascentGates = [];
+  const routeGateRequests = new Map();
+  const routeGates = [];
   if (verticalPlanOption) {
     const requested = verticalPlanOption === true ? {} : verticalPlanOption;
     verticalPlan = createPhaseVerticalPlan({
@@ -429,9 +475,15 @@ export function generateLevel(seedString, {
     });
     verticalPlanViolations = validatePhaseVerticalPlan(verticalPlan);
     if (verticalPlanViolations.length) verticalPlan = null;
-    if (verticalPlan && requested.ascentGates) {
-      for (const gate of plannedAscentGates(verticalPlan)) {
-        ascentGateRequests.set(gate.chunkIndex, gate);
+    // `ascentGates: true` continua valendo e agora significa TODOS os tipos de
+    // portão. Uma lista explícita restringe — é assim que uma fase sem uma das
+    // habilidades deixa de pedir o portão que ela não pode abrir.
+    const requestedKinds = Array.isArray(requested.gateKinds)
+      ? requested.gateKinds
+      : requested.ascentGates ? ROUTE_GATE_KINDS : [];
+    if (verticalPlan && requestedKinds.length) {
+      for (const gate of plannedRouteGates(verticalPlan, { kinds: requestedKinds })) {
+        routeGateRequests.set(gate.chunkIndex, gate);
       }
     }
   }
@@ -518,38 +570,46 @@ export function generateLevel(seedString, {
     let accepted = false;
     let prim = null;
 
-    // Portão de subida: geometria autoral. Fica FORA de `stabilizeGeometry` e
-    // de `validated` — ver o comentário sobre `buildAscentGatePlatform`.
+    // Portão da rota: geometria autoral. Fica FORA de `stabilizeGeometry` e de
+    // `validated` — ver o comentário sobre `buildAscentGatePlatform`.
     // A saída de um encontro de travessia nunca vira hospedeiro: alargá-la
     // mexeria na geometria que o próprio encontro validou.
-    const gateRequest = ascentGateRequests.get(i);
+    const gateRequest = routeGateRequests.get(i);
     if (gateRequest && !chunk.isSkillIntro && !chunk.allyId
       && !prevPlatform.encounterInstanceId && prevPlatform.logicIndex >= 0) {
       // Alarga o hospedeiro ANTES de medir o vão: a inoculação precisa de
       // superfície, e alargar à direita não afeta o salto que chegou até aqui.
-      prevPlatform.w = Math.max(prevPlatform.w, ASCENT_GATE_HOST_MIN_WIDTH);
-      const gatePlatform = buildAscentGatePlatform(
-        prevPlatform,
-        gateRequest,
-        rnd,
-        i,
-        verticalPlan ? verticalBandAt(verticalPlan, i) : null,
-      );
+      prevPlatform.w = Math.max(prevPlatform.w, ROUTE_GATE_HOST_MIN_WIDTH);
+      const band = verticalPlan ? verticalBandAt(verticalPlan, i) : null;
+      const gatePlatform = gateRequest.mechanic === 'mycorrhizaBridge'
+        ? buildBridgeGatePlatform(prevPlatform, gateRequest, rnd, i, band)
+        : gateRequest.mechanic === 'azospirillumAscent'
+          ? buildAscentGatePlatform(prevPlatform, gateRequest, rnd, i, band)
+          : null;
       if (gatePlatform) {
-        // `generateAzospirillumRootLadders` exige hospedeiro de raiz sólida.
+        // Escada e ponte exigem hospedeiro de raiz sólida: é dele que a
+        // estrutura biológica nasce.
         prevPlatform.type = 'root';
         prevPlatform.recovery = false;
-        prevPlatform.ascentGateHost = true;
-        prevPlatform.ascentGateId = gatePlatform.ascentGateId;
+        const isBridge = Boolean(gatePlatform.bridgeGate);
+        const id = gatePlatform.ascentGateId || gatePlatform.bridgeGateId;
+        if (isBridge) {
+          prevPlatform.bridgeGateHost = true;
+          prevPlatform.bridgeGateId = id;
+        } else {
+          prevPlatform.ascentGateHost = true;
+          prevPlatform.ascentGateId = id;
+        }
         nextPlatform = gatePlatform;
         prim = primitives.find(p => p.id === 'running-jump-short') || primitives[0];
         accepted = true;
-        ascentGates.push({
-          id: gatePlatform.ascentGateId,
+        routeGates.push({
+          id,
+          kind: gateRequest.mechanic,
           chunkIndex: i,
           zoneId: gateRequest.zoneId,
           mechanic: gateRequest.mechanic,
-          rise: gatePlatform.ascentGateRise,
+          rise: gatePlatform.ascentGateRise ?? 0,
           gap: Math.round(gatePlatform.x - (prevPlatform.x + prevPlatform.w)),
           host: prevPlatform,
           destination: gatePlatform,
@@ -581,6 +641,36 @@ export function generateLevel(seedString, {
       nextPlatform = fallback.platform;
       prim = fallback.primitive;
       accepted = true;
+    }
+
+    // Parede de fosfato: ao contrário dos outros dois, ela não muda a rota —
+    // o depósito mineral se ergue SOBRE a plataforma que o chunk acabou de
+    // produzir, seja ela normal ou fallback. Por isso é marcada aqui, depois
+    // da geometria, e não num ramo próprio. A parede em si nasce em `app.js`,
+    // que é quem conhece `createPhosphateDepositAt` e a colônia de Bacillus.
+    if (gateRequest?.mechanic === 'phosphateWall' && !chunk.isSkillIntro
+      && !chunk.allyId && !chunk.isCheckpoint && !nextPlatform.ascentGate
+      && !nextPlatform.bridgeGate) {
+      // O depósito ocupa 58 px na borda direita e precisa de pouso à esquerda
+      // dele, senão o jogador cai ao aterrissar.
+      nextPlatform.w = Math.max(nextPlatform.w, ROUTE_GATE_HOST_MIN_WIDTH);
+      nextPlatform.phosphateWallGate = true;
+      nextPlatform.phosphateWallGateId = `phos-wall-${i}`;
+      routeGates.push({
+        id: nextPlatform.phosphateWallGateId,
+        kind: 'phosphateWall',
+        chunkIndex: i,
+        zoneId: gateRequest.zoneId,
+        mechanic: 'phosphateWall',
+        rise: 0,
+        gap: 0,
+        // Hospedeiro e destino são a MESMA plataforma: a parede fecha a saída
+        // dela, não o vão até a próxima.
+        host: nextPlatform,
+        destination: nextPlatform,
+        hostLogicIndex: i,
+        destinationLogicIndex: i,
+      });
     }
 
     if (chunk.isCheckpoint) {
@@ -724,7 +814,10 @@ export function generateLevel(seedString, {
     verticalPlan,
     verticalPlanViolations,
     verticalPlanRequested: Boolean(verticalPlanOption),
-    ascentGates,
+    routeGates,
+    // Vista filtrada, mantida porque a escada já é lida por nome em `app.js`,
+    // nos testes e no painel de debug. Somar sem quebrar o anterior.
+    ascentGates: routeGates.filter(gate => gate.kind === 'azospirillumAscent'),
     primitives,
     endX,
     cameraMaxX: Math.max(0, endX - 1000),
@@ -861,6 +954,20 @@ export function isIntentionalDynamicCrossing(level, previous, next) {
       expectedBlockedUntilDeveloped: true,
       ascentGateId: next.ascentGateId,
       ascentGateRise: next.ascentGateRise,
+    };
+  }
+  // Portão de ponte: o vão de 520 a 610 px é intransponível de propósito, e
+  // quem o fecha é a ponte de hifas. Reconhecido por metadado como o de
+  // subida — a regra genérica de `mycorrhizaStructuresAvailable`, mais abaixo,
+  // só vale quando a fase inteira tem a habilidade, e este vão existe por
+  // pedido da rota, não por acaso.
+  if (next.bridgeGate && previous.bridgeGateHost
+    && previous.bridgeGateId === next.bridgeGateId) {
+    return {
+      mechanic: 'mycorrhizaBridgeGate',
+      expectedBlockedUntilDeveloped: true,
+      bridgeGateId: next.bridgeGateId,
+      blockedGapWidth: next.bridgeGateGap,
     };
   }
   if (isThemedCrossing(previous, next)) {
