@@ -801,7 +801,18 @@ const phases = [
   // ferimentos abertos por Rhizoctonia e Meloidogyne viram porta de entrada.
   {
     id: 'phase-10', phase: 10, totalChunks: 40,
-    nitrogenRoot: { ...NITROGEN_ROOT_DEFAULTS },
+    // A fase varia de comprimento a cada seed. `totalChunks` continua sendo o
+    // valor de referencia (e o que as fases 0-9 usam); `chunkRange` diz que
+    // ESTA fase pode ser mais curta ou mais longa. So a 10 declara isso: as
+    // outras tem conteudo ancorado em chunk (estreias, unlocks) que uma
+    // mudanca de comprimento deslocaria.
+    chunkRange: [30, 52],
+    // count 1 era a razao de a FBN aparecer uma vez so, mesmo sendo o unico
+    // desafio ligado. Na fase 2, que a estreia, um portao basta; na 10 ela
+    // divide o palco com escada, ponte e parede, e precisa da mesma
+    // frequencia. O numero real sai do que a rota comporta: `count` e teto,
+    // nao cota.
+    nitrogenRoot: { ...NITROGEN_ROOT_DEFAULTS, count: 3 },
     nitrogenAvailability: { ...NITROGEN_AVAILABILITY_DEFAULTS },
     ralstonia: { ...RALSTONIA_DEFAULTS, maximumFocusCount: 2 },
     title: 'Ecossistema integrado', theme: 'síntese',
@@ -854,6 +865,10 @@ export function setPhaseManifestOverride(phaseManifest) {
   }
   phaseManifestOverrides.set(candidate.phase, candidate);
   return candidate;
+}
+
+export function hasPhaseManifestOverride(phase) {
+  return phaseManifestOverrides.has(phase);
 }
 
 export function clearPhaseManifestOverride(phase = null) {
@@ -1129,6 +1144,12 @@ export function validateCampaignManifest({
     }
     if (phase.newCommand !== null && !VALID_COMMANDS.has(phase.newCommand)) {
       errors.push(`${phase.id}: comando novo inválido ${phase.newCommand}.`);
+    }
+    if (Array.isArray(phase.chunkRange)) {
+      const [minimum, maximum] = phase.chunkRange;
+      if (!Number.isInteger(minimum) || !Number.isInteger(maximum) || minimum < 8 || maximum < minimum) {
+        errors.push(`${phase.id}: chunkRange invalido.`);
+      }
     }
     if (!Number.isInteger(phase.totalChunks) || phase.totalChunks <= 0) {
       errors.push(`${phase.id}: totalChunks inválido.`);

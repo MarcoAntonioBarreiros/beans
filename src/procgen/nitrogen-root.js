@@ -190,10 +190,17 @@ export function generateUnderdevelopedNitrogenRoots({
   ));
   // Keep seed-based variation, but only among the first valid route slots. This
   // prevents the teaching mechanic from being hidden near the end of the phase.
-  const candidateWindow = orderedCandidates.slice(0, Math.min(
-    orderedCandidates.length,
-    Math.max(4, config.count * 4),
-  ));
+  //
+  // A restricao existe para a ESTREIA: na fase 2 a FBN e o que a fase ensina, e
+  // esconde-la no fim seria esconder a aula. Onde ela pede mais de um portao
+  // ja nao e estreia — e um desafio entre quatro, e limita-la ao comeco da rota
+  // era o que a fazia aparecer uma vez so mesmo com `count` maior.
+  const candidateWindow = config.count > 1
+    ? orderedCandidates
+    : orderedCandidates.slice(0, Math.min(
+        orderedCandidates.length,
+        Math.max(4, config.count * 4),
+      ));
   const selected = [];
   for (const candidate of shuffled(candidateWindow, random)) {
     if (selected.some(existing => Math.abs(existing.targetPlatform.logicIndex - candidate.targetPlatform.logicIndex) < 3)) continue;

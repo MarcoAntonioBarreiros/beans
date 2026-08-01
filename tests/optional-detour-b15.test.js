@@ -17,6 +17,16 @@ import {
   HARD_PHOSPHATE_GATE_MODULE,
 } from '../src/procgen/optional-detour-modules.js';
 import { applySignatureChallenge } from '../src/procgen/signature-challenge.js';
+import { getPhaseManifest, setPhaseManifestOverride } from '../src/procgen/campaign-manifest.js';
+
+function cloneForFixedLength(manifest) {
+  return JSON.parse(JSON.stringify({ ...manifest, chunkRange: undefined }));
+}
+
+// Cenario de SEEDS curadas contra uma fase de 40 chunks — ver o mesmo comentario
+// em optional-detour-stage-a. O que se exercita aqui e o conector do desvio,
+// nao o comprimento da fase.
+setPhaseManifestOverride(cloneForFixedLength(getPhaseManifest(10)));
 
 const ABILITIES = Object.freeze([
   'doubleJump',

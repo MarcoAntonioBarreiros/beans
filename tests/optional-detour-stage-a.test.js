@@ -11,6 +11,18 @@ import { generateLevel } from '../src/procgen/generator.js';
 import { createPhaseTenOptionalDetour } from '../src/procgen/optional-detour-builder.js';
 import { validateOptionalDetour } from '../src/procgen/optional-detour-validator.js';
 import { applySignatureChallenge } from '../src/procgen/signature-challenge.js';
+import { getPhaseManifest, setPhaseManifestOverride } from '../src/procgen/campaign-manifest.js';
+
+function cloneForFixedLength(manifest) {
+  return JSON.parse(JSON.stringify({ ...manifest, chunkRange: undefined }));
+}
+
+// Estes cenarios curam SEEDS: cada uma foi escolhida por produzir uma janela
+// primaria util numa fase de 40 chunks. O que eles exercitam e o DESVIO, nao o
+// comprimento da fase — que passou a variar por seed. Fixar o manifesto aqui
+// mantem a curadoria valida; a variacao de comprimento tem cobertura propria
+// em progression-gating e phase-vertical-plan.
+setPhaseManifestOverride(cloneForFixedLength(getPhaseManifest(10)));
 
 const SEEDS = Object.freeze([
   'stage-a-5',

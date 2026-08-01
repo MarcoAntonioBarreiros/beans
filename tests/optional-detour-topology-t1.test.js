@@ -36,6 +36,18 @@ import {
   T2_DIFFICULTY_BUDGET,
 } from '../src/procgen/optional-detour-challenge-constraints.js';
 import { readFileSync } from 'node:fs';
+import { getPhaseManifest, setPhaseManifestOverride } from '../src/procgen/campaign-manifest.js';
+
+function cloneForFixedLength(manifest) {
+  return JSON.parse(JSON.stringify({ ...manifest, chunkRange: undefined }));
+}
+
+// Estes cenarios curam SEEDS: cada uma foi escolhida por produzir uma janela
+// primaria util numa fase de 40 chunks. O que eles exercitam e o DESVIO, nao o
+// comprimento da fase — que passou a variar por seed. Fixar o manifesto aqui
+// mantem a curadoria valida; a variacao de comprimento tem cobertura propria
+// em progression-gating e phase-vertical-plan.
+setPhaseManifestOverride(cloneForFixedLength(getPhaseManifest(10)));
 
 const ABILITIES = Object.freeze([
   'doubleJump',

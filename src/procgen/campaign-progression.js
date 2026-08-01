@@ -4,7 +4,9 @@ import {
   campaignManifest,
   getPathogenStartChunk,
   getPhaseManifest,
+  hasPhaseManifestOverride,
 } from './campaign-manifest.js';
+import { createRandom } from './random.js';
 import { setLogicCampaignProfile } from './logic.js';
 import { getChunkAnchorPlatform } from './traversal-route.js';
 
@@ -164,9 +166,66 @@ function runtimeUnlockEvent(event) {
   };
 }
 
+// COMPRIMENTO VARIAVEL DA FASE
+// ============================
+//
+// `totalChunks` era uma constante por fase: a 10 tinha 40 chunks em toda seed.
+// A silhueta variava, os desafios variavam, mas o percurso tinha sempre o
+// mesmo tamanho — e duas fases do mesmo comprimento se parecem mais do que
+// deveriam, por mais que o relevo mude.
+//
+// Uma fase so participa se DECLARAR `chunkRange`. Hoje e so a 10: as outras
+// tem estreias e desbloqueios ancorados em indice de chunk, e mudar o
+// comprimento deslocaria conteudo autoral.
+//
+// Os segmentos sao reescalados junto, pela mesma conta do laboratorio: quem le
+// janelas de segmento (a Ralstonia, por exemplo) precisa ve-las cobrindo a
+// fase inteira, nao os 40 chunks de referencia.
+//
+// O Phase Lab MANDA. Quando ele fixou um override desta fase, o comprimento e
+// o que o painel diz — quem esta testando escolheu aquele numero de proposito.
+function scaleSegmentsTo(segments, oldTotal, newTotal) {
+  const source = (segments || []).map(segment => ({ ...segment }));
+  if (!source.length || oldTotal === newTotal) return source;
+  const ratio = (newTotal - 1) / Math.max(1, oldTotal - 1);
+  const limit = value => Math.max(0, Math.min(newTotal - 1, value));
+  return source.map((segment, index) => {
+    const next = source[index + 1];
+    const from = index === 0 ? 0 : limit(Math.round(segment.from * ratio));
+    const to = next ? Math.max(from, limit(Math.round(next.from * ratio) - 1)) : newTotal - 1;
+    return { ...segment, from, to };
+  });
+}
+
+export function resolvePhaseChunkCount(manifest, campaign) {
+  const range = manifest?.chunkRange;
+  if (!Array.isArray(range)) return manifest.totalChunks;
+  if (hasPhaseManifestOverride(manifest.phase)) return manifest.totalChunks;
+  const [minimum, maximum] = range;
+  if (!Number.isInteger(minimum) || !Number.isInteger(maximum) || maximum <= minimum) {
+    return manifest.totalChunks;
+  }
+  // Semente propria: ligar ou desligar esta variacao nao desloca a sequencia
+  // aleatoria de nada mais.
+  const random = createRandom(`${campaign?.seed ?? ''}:phase-length:p${manifest.phase}`);
+  return minimum + Math.floor(random() * (maximum - minimum + 1));
+}
+
+export function phaseManifestForCampaign(campaign) {
+  const manifest = getPhaseManifest(campaign.phase);
+  if (!manifest) return manifest;
+  const totalChunks = resolvePhaseChunkCount(manifest, campaign);
+  if (totalChunks === manifest.totalChunks) return manifest;
+  return {
+    ...manifest,
+    totalChunks,
+    segments: scaleSegmentsTo(manifest.segments, manifest.totalChunks, totalChunks),
+  };
+}
+
 export function getPhaseProfile(campaign) {
   ensureCampaignUnlockShape(campaign);
-  const manifest = getPhaseManifest(campaign.phase);
+  const manifest = phaseManifestForCampaign(campaign);
   if (!manifest) throw new RangeError(`Fase de campanha inexistente: ${campaign.phase}`);
 
   const tuning = tuningForPhase(manifest.phase);

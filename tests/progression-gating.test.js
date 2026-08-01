@@ -61,7 +61,17 @@ test('perfil, título, missão e eventos de todas as fases vêm do manifesto', (
     assert.equal(profile.title, phase.title);
     assert.equal(profile.theme, phase.theme);
     assert.equal(profile.mission, phase.mission);
-    assert.equal(profile.totalChunks, phase.totalChunks);
+    // Uma fase que declara `chunkRange` varia de comprimento a cada seed: o
+    // perfil respeita a FAIXA, nao o valor de referencia do manifesto.
+    if (Array.isArray(phase.chunkRange)) {
+      const [minimum, maximum] = phase.chunkRange;
+      assert.ok(
+        profile.totalChunks >= minimum && profile.totalChunks <= maximum,
+        `${phase.id}: ${profile.totalChunks} fora de ${minimum}..${maximum}`,
+      );
+    } else {
+      assert.equal(profile.totalChunks, phase.totalChunks);
+    }
     assert.deepEqual(
       profile.unlockEvents.map(event => ({ feature: event.feature, eventChunk: event.eventChunk })),
       phase.unlockEvents.map(event => ({ feature: event.feature, eventChunk: event.eventChunk })),
