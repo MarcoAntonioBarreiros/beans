@@ -172,16 +172,75 @@ export function generateUnderdevelopedNitrogenRoots({
 
   const firstExudate = exudateIndexes[0];
   const route = routePlatforms(level);
+
+  // TRIOS CONSTRUIDOS PELA ROTA
+  // ---------------------------
+  // Medindo por que cada posicao era recusada, em 16 seeds da fase 10: o vao
+  // nunca reprovou (0), mas o conteudo sobre a plataforma-alvo reprovou 393
+  // vezes e o tipo dela 322. A busca dependia de um trio ACIDENTAL — esquerda,
+  // alvo, direita com as tres distancias certas e nada em cima —, e por isso a
+  // FBN saia uma vez por fase por mais que `count` subisse.
+  //
+  // Quando o plano PEDE o portao, o gerador constroi o trio: e o mesmo
+  // tratamento que a escada, a ponte e a parede ja tinham. A busca continua
+  // existindo para as fases que nao pedem, e para completar o que faltar.
+  const authoredSlots = [];
+  for (const gate of level.routeGates || []) {
+    if (gate.kind !== 'nitrogenRootGate' || !gate.rightPlatform) continue;
+    const hostPlatform = gate.host;
+    const targetPlatform = gate.destination;
+    const rightPlatform = gate.rightPlatform;
+    if (!hostPlatform || !targetPlatform || !rightPlatform) continue;
+    if (hostPlatform.logicIndex <= firstExudate) continue;
+    const blockedGapWidth = rightPlatform.x - (hostPlatform.x + hostPlatform.w);
+    if (blockedGapWidth <= PHASE_TWO_MAX_ORDINARY_GAP) continue;
+    // Encontro em cima do alvo se muda para o hospedeiro, que e onde o jogador
+    // precisa dele para nodular.
+    relocateEncounters(encounters, targetPlatform, hostPlatform);
+    authoredSlots.push({
+      hostPlatform,
+      targetPlatform,
+      leftPlatform: hostPlatform,
+      rightPlatform,
+      blockedGapWidth,
+      leftLandingGap: targetPlatform.x - (hostPlatform.x + hostPlatform.w),
+      rightLandingGap: rightPlatform.x - (targetPlatform.x + targetPlatform.w),
+      authored: true,
+    });
+  }
   // Primeiro tenta so onde o sorteio ja pos raiz. So promove solo a raiz se a
   // fase inteira nao oferecer nenhum lugar — assim a variacao entre seeds
   // continua existindo, mas o portao da FBN nunca some.
-  let promoted = false;
-  let candidates = routeGapCandidates(level, encounters, route, firstExudate);
-  if (!candidates.length) {
+  //
+  // MEDIDO, em 16 seeds da fase 10 com count=3, contando POR QUE cada posicao
+  // da rota foi recusada:
+  //
+  //   alvo com conteudo em cima (exsudato, encontro, inimigo)  393
+  //   alvo nao e raiz (o gerador sorteia 25% de solo)          322
+  //   pouso esquerdo longe demais                               77
+  //   hospedeiro nao colonizavel                                62
+  //   antes do primeiro exsudato                                43
+  //   pouso direito longe demais                                28
+  //   vao estreito demais                                        0
+  //   ACEITO                                                    10
+  //
+  // O vao nunca foi o problema. Quem recusa e o conteudo sobre a plataforma e
+  // o sorteio do tipo — e a promocao de solo a raiz, que resolve os dois
+  // (`allowPromotion` tambem deixa o encontro se mudar para a raiz
+  // hospedeira), so era tentada quando a fase inteira nao oferecia NENHUM
+  // lugar. Como quase sempre havia um, ela nunca rodava: dai o portao unico.
+  //
+  // Onde a fase pede mais de um portao, a promocao entra desde o inicio. Na
+  // estreia (fase 2, count 1) o comportamento continua sendo o de antes:
+  // primeiro o que o sorteio ja deu, promocao so em ultimo caso.
+  const wantsMany = config.count > 1;
+  let promoted = wantsMany;
+  let candidates = routeGapCandidates(level, encounters, route, firstExudate, wantsMany);
+  if (!candidates.length && !promoted) {
     promoted = true;
     candidates = routeGapCandidates(level, encounters, route, firstExudate, true);
   }
-  if (!candidates.length) return level.nitrogenRoots;
+  if (!candidates.length && !authoredSlots.length) return level.nitrogenRoots;
 
   const random = createRandom(`${seedValue}:nitrogen-root:p${phase}`);
   const orderedCandidates = [...candidates].sort((left, right) => (
@@ -201,16 +260,18 @@ export function generateUnderdevelopedNitrogenRoots({
         orderedCandidates.length,
         Math.max(4, config.count * 4),
       ));
-  const selected = [];
+  // Os trios construidos entram primeiro e sem sorteio: a rota ja decidiu onde
+  // eles ficam.
+  const selected = [...authoredSlots];
   for (const candidate of shuffled(candidateWindow, random)) {
     if (selected.some(existing => Math.abs(existing.targetPlatform.logicIndex - candidate.targetPlatform.logicIndex) < 3)) continue;
     selected.push(candidate);
-    if (selected.length >= Math.min(config.count, candidates.length)) break;
+    if (selected.length >= Math.min(config.count, authoredSlots.length + candidates.length)) break;
   }
   level.nitrogenRoots = selected.map((slot, index) => {
     const { hostPlatform, targetPlatform, leftPlatform, rightPlatform } = slot;
     // Só o par escolhido vira raiz, e só quando não havia alternativa sorteada.
-    if (promoted) {
+    if (promoted && !slot.authored) {
       if (promotableToRoot(hostPlatform)) hostPlatform.type = 'root';
       if (promotableToRoot(targetPlatform)) targetPlatform.type = 'root';
       relocateEncounters(encounters, targetPlatform, hostPlatform);

@@ -394,10 +394,16 @@ function phaseSilhouetteDebug(level) {
         .find(structure => structure.source === gate.host || structure.sourcePlatform === gate.host);
       return bridge ? (bridge.mature ? 'ponte madura' : 'ponte crescendo') : 'aguarda ponte AM';
     }
+    if (gate.kind === 'nitrogenRootGate') {
+      const root = (level.nitrogenRoots || [])
+        .find(entry => entry.targetPlatform === gate.destination);
+      if (!root) return 'SEM RAIZ';
+      return root.developed ? 'raiz devolvida' : 'aguarda nodulo';
+    }
     if (gate.skipped) return `PULADO: ${gate.skipped}`;
     return gate.deposit?.broken ? 'parede aberta' : 'aguarda pulso de P';
   };
-  const label = { azospirillumAscent: 'AZO', mycorrhizaBridge: 'AM', phosphateWall: 'P' };
+  const label = { azospirillumAscent: 'AZO', mycorrhizaBridge: 'AM', phosphateWall: 'P', nitrogenRootGate: 'FBN' };
   const missing = ROUTE_GATE_KINDS
     .filter(kind => !campaign.unlocks?.[ROUTE_GATE_REQUIRED_ABILITY[kind]])
     .map(kind => label[kind]);
@@ -800,7 +806,12 @@ function availableRouteGateKinds() {
   const selection = phaseLab.enabled ? phaseLab.config?.allowedOrganisms : null;
   const allowed = Array.isArray(selection) ? new Set(selection) : null;
   return ROUTE_GATE_KINDS.filter(kind => {
-    if (!campaign.unlocks?.[ROUTE_GATE_REQUIRED_ABILITY[kind]]) return false;
+    // Habilidade `null` = nao existe desbloqueio para este tipo. E o caso da
+    // FBN: nodular esta disponivel desde a fase 2. Tratar `null` como "nao
+    // liberado" descartaria o portao silenciosamente no jogo, mesmo com ele
+    // aparecendo em toda medicao feita chamando `generateLevel` direto.
+    const ability = ROUTE_GATE_REQUIRED_ABILITY[kind];
+    if (ability && !campaign.unlocks?.[ability]) return false;
     return !allowed || allowed.has(ROUTE_GATE_REQUIRED_ORGANISM[kind]);
   });
 }

@@ -286,7 +286,19 @@ export const ROUTE_GATE_KINDS = Object.freeze([
   'azospirillumAscent',
   'mycorrhizaBridge',
   'phosphateWall',
+  'nitrogenRootGate',
 ]);
+
+// O portao de FBN ocupa DOIS chunks: a plataforma que sera removida e a que
+// fica depois dela. O vao total (esquerda ate direita) precisa passar de 142 px
+// — o salto comum — enquanto cada pouso isolado continua saltavel, senao o
+// jogador nao consegue nem chegar ao alvo nem sair dele.
+//
+// Estes numeros saem de `PHASE_TWO_MAX_ORDINARY_GAP = 142` em nitrogen-root.js:
+// 110 + largura do alvo + 110 sempre passa de 142 no total e nunca passa de 142
+// em cada perna.
+export const NITROGEN_GATE_LANDING_GAP_RANGE = Object.freeze([96, 126]);
+export const NITROGEN_GATE_TARGET_WIDTH_RANGE = Object.freeze([104, 140]);
 
 // Cada tipo pede a habilidade que o abre. Sem ela o portão é softlock, não
 // desafio — é a mesma regra que já vale para a escada.
@@ -294,6 +306,9 @@ export const ROUTE_GATE_REQUIRED_ABILITY = Object.freeze({
   azospirillumAscent: 'azospirillumRoots',
   mycorrhizaBridge: 'mycorrhizaStructures',
   phosphateWall: 'phosphateSolubilization',
+  // A FBN nao tem desbloqueio: nodular esta disponivel desde a fase 2. Quem
+  // decide se o portao pode existir e a presenca do Rhizobium.
+  nitrogenRootGate: null,
 });
 
 // A habilidade nao basta: quem ABRE o portao e o ORGANISMO, e o Phase Lab pode
@@ -304,6 +319,7 @@ export const ROUTE_GATE_REQUIRED_ORGANISM = Object.freeze({
   azospirillumAscent: 'azospirillum',
   mycorrhizaBridge: 'myco',
   phosphateWall: 'bacillus',
+  nitrogenRootGate: 'rhizobium',
 });
 
 /**
@@ -376,6 +392,7 @@ export function plannedRouteGates(plan, {
   minimumZoneRise = 300,
   maximumBridges = 2,
   maximumWalls = 2,
+  maximumNitrogenGates = 3,
   // Distância mínima entre portões, em chunks. Dois desafios colados viram um
   // desafio só, e sem espaço para respirar entre eles.
   minimumSpacing = 4,
@@ -391,35 +408,64 @@ export function plannedRouteGates(plan, {
     && !gates.some(gate => Math.abs(gate.chunkIndex - at) < minimumSpacing)
   );
 
-  // Vários pontos por zona, em vez de só o meio. Com um ponto só, a ponte
-  // ocupava o meio de toda zona livre e a parede não achava mais lugar: em 24
-  // seeds saíram 44 pontes e 2 paredes. O meio continua sendo a primeira
-  // escolha — perto da borda o passo seguinte já negocia a transição para a
-  // próxima zona e a geometria do portão brigaria com ela.
+  // RODIZIO ENTRE OS TIPOS, e nao uma passada por tipo.
+  //
+  // A primeira versao rodava um tipo de cada vez, na ordem em que estao
+  // declarados, e quem vinha por ultimo herdava a sobra. Medido em 16 planos:
+  // 44 escadas, 29 pontes, 15 paredes e 4 portoes de FBN. O quarto tipo nao
+  // "falhava" — ele nunca tinha onde nascer, porque `minimumSpacing` ja estava
+  // gasto quando chegava a vez dele.
+  //
+  // Agora cada tipo coloca UM por rodada, e a ordem das rodadas gira conforme o
+  // plano. Ninguem e sempre o primeiro, e ninguem herda so a sobra.
   const ZONE_OFFSETS = [0.5, 0.3, 0.7, 0.2, 0.8];
-  const spread = (mechanic, limit, build) => {
-    let placed = 0;
+  const queues = new Map();
+  const register = (mechanic, limit, build) => {
+    if (!allowed.has(mechanic)) return;
+    const slots = [];
     for (const zone of plan.zones) {
-      if (placed >= limit) break;
       const span = zone.toChunk - zone.fromChunk;
       for (const offset of ZONE_OFFSETS) {
-        const at = zone.fromChunk + Math.round(span * offset);
-        if (!free(at)) continue;
-        gates.push({ chunkIndex: at, zoneId: zone.id, mechanic, ...build(zone) });
-        placed++;
-        break;
+        slots.push({ at: zone.fromChunk + Math.round(span * offset), zone });
       }
     }
+    queues.set(mechanic, { slots, limit, build, placed: 0 });
   };
 
-  if (allowed.has('mycorrhizaBridge')) {
-    spread('mycorrhizaBridge', maximumBridges, () => ({
-      gapRange: MYCORRHIZA_BRIDGE_GAP_RANGE,
-      maximumVerticalDelta: MYCORRHIZA_BRIDGE_MAX_DELTA,
-    }));
-  }
-  if (allowed.has('phosphateWall')) {
-    spread('phosphateWall', maximumWalls, () => ({}));
+  register('mycorrhizaBridge', maximumBridges, () => ({
+    gapRange: MYCORRHIZA_BRIDGE_GAP_RANGE,
+    maximumVerticalDelta: MYCORRHIZA_BRIDGE_MAX_DELTA,
+  }));
+  register('phosphateWall', maximumWalls, () => ({}));
+  register('nitrogenRootGate', maximumNitrogenGates, () => ({
+    landingGapRange: NITROGEN_GATE_LANDING_GAP_RANGE,
+    targetWidthRange: NITROGEN_GATE_TARGET_WIDTH_RANGE,
+  }));
+
+  // A ordem gira com o plano: sem isso a micorriza seria sempre a primeira a
+  // escolher, do mesmo jeito que a escada era antes.
+  const order = [...queues.keys()];
+  const rotation = plan.zones.length % Math.max(1, order.length);
+  const rotated = [...order.slice(rotation), ...order.slice(0, rotation)];
+
+  let placedInRound = true;
+  while (placedInRound) {
+    placedInRound = false;
+    for (const mechanic of rotated) {
+      const queue = queues.get(mechanic);
+      if (!queue || queue.placed >= queue.limit) continue;
+      const slotIndex = queue.slots.findIndex(slot => free(slot.at));
+      if (slotIndex < 0) continue;
+      const slot = queue.slots.splice(slotIndex, 1)[0];
+      gates.push({
+        chunkIndex: slot.at,
+        zoneId: slot.zone.id,
+        mechanic,
+        ...queue.build(slot.zone),
+      });
+      queue.placed++;
+      placedInRound = true;
+    }
   }
 
   return gates.sort((left, right) => left.chunkIndex - right.chunkIndex);

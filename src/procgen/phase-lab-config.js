@@ -17,7 +17,13 @@ import {
 } from './campaign-manifest.js';
 import { createRandom } from './random.js';
 
-export const PHASE_LAB_STORAGE_KEY = 'miguelito:phase-lab:v4';
+// v5: o config salvo e usado CRU — `readConfig` devolve o que esta no
+// armazenamento sem mesclar com os padroes. Isso e proposital (o painel manda),
+// mas significa que um padrao novo do manifesto nunca chega a quem ja tem
+// config salvo: a Fase 10 passou a pedir tres portoes de FBN e o Lab continuava
+// com o `count: 1` gravado meses atras. Trocar a chave e o unico jeito honesto
+// de entregar o padrao novo sem sobrescrever escolha nenhuma em silencio.
+export const PHASE_LAB_STORAGE_KEY = 'miguelito:phase-lab:v5';
 export const PHASE_LAB_MAX_RESOURCES = 100;
 
 const clone = value => JSON.parse(JSON.stringify(value));

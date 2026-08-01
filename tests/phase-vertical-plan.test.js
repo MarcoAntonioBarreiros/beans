@@ -21,6 +21,7 @@ import { getPhaseManifest } from '../src/procgen/campaign-manifest.js';
 import { createMicrobeEcology } from '../src/procgen/microbe-ecology.js';
 import { synchronizeWorldBounds } from '../src/procgen/world-bounds.js';
 import {
+  ROUTE_GATE_REQUIRED_ORGANISM,
   ASCENT_GATE_MINIMUM_CHUNK,
   AZO_ASCENT_RISE_RANGE,
   MYCORRHIZA_BRIDGE_GAP_RANGE,
@@ -525,7 +526,7 @@ const ALL_GATES = SEEDS.map(seed => {
   return { seed, level };
 });
 
-test('portão - os três tipos convivem; o Azo SOMA, não substitui', () => {
+test('portão - os quatro tipos convivem; o Azo SOMA, não substitui', () => {
   // Foi exatamente isto que faltou na primeira rodada: só a escada entrou na
   // rota principal, e o jogador reportou "todos os desafios viraram Azo".
   const counts = new Map();
@@ -544,6 +545,13 @@ test('portão - os três tipos convivem; o Azo SOMA, não substitui', () => {
   assert.ok(
     seedsWithTwoKinds >= SEEDS.length * 0.5,
     `só ${seedsWithTwoKinds} seeds com dois tipos ou mais`,
+  );
+  // O rodizio existe para nenhum tipo herdar so a sobra: antes dele o quarto
+  // saia 4 vezes em 16 planos contra 44 do primeiro.
+  const spread = ROUTE_GATE_KINDS.map(kind => counts.get(kind) || 0);
+  assert.ok(
+    Math.min(...spread) >= Math.max(...spread) * 0.25,
+    `distribuição desequilibrada: ${ROUTE_GATE_KINDS.map((k, i) => `${k}=${spread[i]}`).join(' ')}`,
   );
 });
 
@@ -601,7 +609,16 @@ test('portão - sem a habilidade, o tipo correspondente não é pedido', () => {
   // A regra que vale para a escada vale para os três: um portão sem a
   // habilidade que o abre é softlock, não desafio.
   for (const kind of ROUTE_GATE_KINDS) {
-    assert.ok(ROUTE_GATE_REQUIRED_ABILITY[kind], `${kind} sem habilidade declarada`);
+    // Nem todo tipo tem desbloqueio: a FBN esta disponivel desde a fase 2.
+    // O que TODO tipo precisa e do organismo que o abre.
+    assert.ok(
+      ROUTE_GATE_REQUIRED_ORGANISM[kind],
+      `${kind} sem organismo declarado`,
+    );
+    assert.ok(
+      ROUTE_GATE_REQUIRED_ABILITY[kind] !== undefined,
+      `${kind} sem entrada de habilidade (use null quando nao houver)`,
+    );
     const others = ROUTE_GATE_KINDS.filter(entry => entry !== kind);
     for (const seed of SEEDS.slice(0, 6)) {
       const level = phaseTen(seed, { verticalPlan: { gateKinds: others } });
@@ -680,6 +697,9 @@ test('portão - a FBN nunca rouba a plataforma de outro portão', () => {
         alive.has(gate.host),
         `${entry.seed}: FBN removeu o hospedeiro do portão ${gate.kind} em c${gate.chunkIndex}`,
       );
+      // O portao de FBN e a excecao: a plataforma-alvo DEVE sumir, e e o nodulo
+      // que a devolve. Para os outros tres, sumir e defeito.
+      if (gate.kind === 'nitrogenRootGate') continue;
       assert.ok(
         alive.has(gate.destination),
         `${entry.seed}: FBN removeu o degrau do portão ${gate.kind} em c${gate.chunkIndex}`,
@@ -748,6 +768,68 @@ test('organismo - acompanha a rota quando ela sobe, medido no loop de update', (
     Math.min(...flat) >= 45,
     `mundo plano vazou para ${Math.round(Math.min(...flat))}`,
   );
+});
+
+
+test('FBN - mais de um portão quando a fase pede mais de um', () => {
+  // "So tem um, mesmo com os demais desligados." A causa nao era competicao
+  // com os outros portoes: era a promocao de solo a raiz, que so rodava quando
+  // a fase inteira nao oferecia NENHUM lugar. Medindo as recusas, o vao nunca
+  // reprovou; quem reprovava era o conteudo sobre a plataforma-alvo e o
+  // sorteio do tipo — os dois exatamente o que a promocao resolve.
+  let total = 0;
+  let seedsWithMany = 0;
+  let seedsWithAny = 0;
+  // Niveis FRESCOS: `generateUnderdevelopedNitrogenRoots` REMOVE plataformas, e
+  // os niveis compartilhados ja foram esculpidos pelo teste de colisao. Rodar
+  // sobre eles media uma rota que nao existe em jogo — a primeira versao deste
+  // teste achou 2 seeds de 16 por isso.
+  for (const seed of SEEDS) {
+    const level = phaseTen(seed, { verticalPlan: { gateKinds: ROUTE_GATE_KINDS } });
+    const encounters = generateCampaignEncounters({
+      platforms: level.platforms,
+      phase: 10,
+      seedValue: seed,
+    });
+    generateUnderdevelopedNitrogenRoots({
+      level,
+      phase: 10,
+      seedValue: seed,
+      encounters,
+      config: { enabled: true, count: 3, requiredFixationRate: 0.05, growthDurationSeconds: 4 },
+    });
+    const roots = level.nitrogenRoots || [];
+    total += roots.length;
+    if (roots.length) seedsWithAny++;
+    if (roots.length > 1) seedsWithMany++;
+  }
+  // Medido depois de a rota passar a CONSTRUIR o trio: 34 portoes em 16 seeds,
+  // 15 seeds com pelo menos um e 11 com mais de um. Antes eram 20, 13 e 5.
+  assert.ok(seedsWithAny >= SEEDS.length * 0.75, `FBN em só ${seedsWithAny} de ${SEEDS.length} seeds`);
+  assert.ok(
+    seedsWithMany >= SEEDS.length * 0.5,
+    `só ${seedsWithMany} seeds com mais de um portão de FBN`,
+  );
+  assert.ok(
+    total >= SEEDS.length * 1.5,
+    `${total} portões em ${SEEDS.length} seeds — voltou ao "um por fase"`,
+  );
+});
+
+test('FBN - a estreia da fase 2 continua com um portão só', () => {
+  // A promocao antecipada vale onde a fase pede varios. Na fase 2 a FBN e o
+  // que se ensina, e o comportamento tem de ser o de sempre.
+  const level = phaseTen(SEEDS[0], { verticalPlan: { gateKinds: ROUTE_GATE_KINDS } });
+  generateUnderdevelopedNitrogenRoots({
+    level,
+    phase: 10,
+    seedValue: SEEDS[0],
+    encounters: generateCampaignEncounters({
+      platforms: level.platforms, phase: 10, seedValue: SEEDS[0],
+    }),
+    config: { enabled: true, count: 1, requiredFixationRate: 0.05, growthDurationSeconds: 4 },
+  });
+  assert.ok((level.nitrogenRoots || []).length <= 1, 'count 1 produziu mais de um portão');
 });
 
 test('silhueta - o fallback é declarado, nunca silencioso', () => {

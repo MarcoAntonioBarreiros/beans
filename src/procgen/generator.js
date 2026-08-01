@@ -213,6 +213,37 @@ function buildBridgeGatePlatform(previous, gate, rnd, index, band) {
   };
 }
 
+// O portao de FBN e o unico que ocupa DOIS chunks. A raiz nitrogenada REMOVE a
+// plataforma do meio e so o nodulo a devolve, entao a rota precisa de um trio:
+// esquerda -> ALVO -> direita, com cada perna saltavel e o vao total nao.
+// `nitrogen-root.js` recusava quase toda posicao da rota porque procurava esse
+// trio por acaso; aqui ele e construido de proposito.
+function buildNitrogenGatePlatform(previous, gate, rnd, index, band, role) {
+  const [minimumGap, maximumGap] = gate.landingGapRange;
+  const gap = Math.round(lerp(minimumGap, maximumGap, rnd()));
+  const [minimumWidth, maximumWidth] = gate.targetWidthRange;
+  const width = role === 'target'
+    ? Math.round(lerp(minimumWidth, maximumWidth, rnd()))
+    : Math.round(lerp(150, 196, rnd()));
+  // Quase sem desnivel: o trio tem de ser saltavel perna a perna, e um degrau
+  // grande no meio dele trocaria o desafio da FBN por um de salto.
+  const planned = band ? band.target - previous.y : 0;
+  const y = Math.round(previous.y + clamp(planned, -34, 44));
+  return {
+    x: previous.x + previous.w + gap,
+    y,
+    w: width,
+    h: 54,
+    // O alvo tem de ser RAIZ: e nele que o nodulo nasce. Sem isto o sorteio de
+    // 25% de solo do gerador continuaria recusando o portao.
+    type: 'root',
+    logicIndex: index,
+    nitrogenGate: role,
+    nitrogenGateId: gate.gateId,
+    verticalZoneId: gate.zoneId,
+  };
+}
+
 function isForgivingChunk(chunk, index) {
   return index < 4 || chunk.isSkillIntro || chunk.allyId || chunk.isCheckpoint || chunk.difficultyTarget !== 'hard';
 }
@@ -464,6 +495,7 @@ export function generateLevel(seedString, {
   // portão sem a habilidade que o abre é um softlock, não um desafio.
   const routeGateRequests = new Map();
   const routeGates = [];
+  let pendingNitrogenGate = null;
   if (verticalPlanOption) {
     const requested = verticalPlanOption === true ? {} : verticalPlanOption;
     verticalPlan = createPhaseVerticalPlan({
@@ -570,6 +602,20 @@ export function generateLevel(seedString, {
     let accepted = false;
     let prim = null;
 
+    // Fecha o trio da FBN: a plataforma seguinte ao alvo tambem e autoral, ou o
+    // vao total nao bate com a conta que `nitrogen-root.js` exige.
+    if (pendingNitrogenGate && pendingNitrogenGate.chunkIndex === i - 1) {
+      const band = verticalPlan ? verticalBandAt(verticalPlan, i) : null;
+      const right = buildNitrogenGatePlatform(prevPlatform, pendingNitrogenGate, rnd, i, band, 'right');
+      right.nitrogenGate = 'right';
+      nextPlatform = right;
+      prim = primitives.find(p => p.id === 'running-jump-short') || primitives[0];
+      accepted = true;
+      const request = routeGates.find(entry => entry.id === pendingNitrogenGate.gateId);
+      if (request) request.rightPlatform = right;
+      pendingNitrogenGate = null;
+    }
+
     // Portão da rota: geometria autoral. Fica FORA de `stabilizeGeometry` e de
     // `validated` — ver o comentário sobre `buildAscentGatePlatform`.
     // A saída de um encontro de travessia nunca vira hospedeiro: alargá-la
@@ -585,15 +631,27 @@ export function generateLevel(seedString, {
         ? buildBridgeGatePlatform(prevPlatform, gateRequest, rnd, i, band)
         : gateRequest.mechanic === 'azospirillumAscent'
           ? buildAscentGatePlatform(prevPlatform, gateRequest, rnd, i, band)
-          : null;
+          : gateRequest.mechanic === 'nitrogenRootGate'
+            ? buildNitrogenGatePlatform(prevPlatform, { ...gateRequest, gateId: `fbn-gate-${i}` }, rnd, i, band, 'target')
+            : null;
       if (gatePlatform) {
         // Escada e ponte exigem hospedeiro de raiz sólida: é dele que a
         // estrutura biológica nasce.
         prevPlatform.type = 'root';
         prevPlatform.recovery = false;
         const isBridge = Boolean(gatePlatform.bridgeGate);
-        const id = gatePlatform.ascentGateId || gatePlatform.bridgeGateId;
-        if (isBridge) {
+        const isNitrogen = gatePlatform.nitrogenGate === 'target';
+        const id = gatePlatform.ascentGateId
+          || gatePlatform.bridgeGateId
+          || gatePlatform.nitrogenGateId;
+        if (isNitrogen) {
+          // A ESQUERDA e o hospedeiro do nodulo, e a plataforma DEPOIS do alvo
+          // fecha o trio. Ela e reservada agora para o chunk seguinte nao
+          // negociar o proprio vao e estragar a conta.
+          prevPlatform.nitrogenGate = 'host';
+          prevPlatform.nitrogenGateId = id;
+          pendingNitrogenGate = { ...gateRequest, gateId: id, chunkIndex: i };
+        } else if (isBridge) {
           prevPlatform.bridgeGateHost = true;
           prevPlatform.bridgeGateId = id;
         } else {
