@@ -270,6 +270,7 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
           <button type="button" data-arrival-clear>Limpar diagnóstico</button>
         </div>
         <button type="button" data-arrival-defaults>Restaurar padrões das chegadas</button>
+        <p style="margin:6px 0 0; font-size:11px; opacity:.72;">Os intervalos acima são pontos de interpolação, não faixas: a pressão exata define o intervalo entre eles. Tab desenha origem, trajetória, raiz-alvo e as pontuações dos candidatos.</p>
         <pre data-arrival-readout style="margin:8px 0 0; padding:8px; border-radius:8px; background:#04181bcc; color:#cdefe9; font:11px/1.45 ui-monospace,Consolas,monospace; white-space:pre-wrap;">sem leitura</pre>
       </fieldset>
       <fieldset><legend>Raiz dependente de FBN</legend>
@@ -686,30 +687,60 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
         return;
       }
       const round = value => (Math.round(Number(value) * 100) / 100).toFixed(2);
-      const warning = reading.warning
-        ? `${reading.warning.pathogen} em c${reading.warning.targetRoot?.logicIndex ?? '?'}`
-          + ` x=${Math.round(reading.warning.targetX)}`
+      // O deslocamento e o dado novo: de onde saiu, quanto ja andou, quanto
+      // falta. Antes o Lab dizia o alvo e escondia o percurso inteiro.
+      const travel = reading.warning
+        ? `${reading.warning.pathogen} <- ${reading.warning.originType}`
+          + ` (${Math.round(reading.warning.originX)},${Math.round(reading.warning.originY)})`
+          + ` -> c${reading.warning.targetRoot?.logicIndex ?? '?'}`
+          + ` (${Math.round(reading.warning.targetX)},${Math.round(reading.warning.targetY ?? 0)})`
+          + ` ${Math.round((reading.warning.travelProgress || 0) * 100)}%`
           + ` faltam ${round(reading.warning.timeRemaining)}s`
+          + ` de ${round(reading.warning.estimatedTravelSeconds)}s`
           + ` (${reading.warning.source}${reading.warning.tutorial ? ', didatica' : ''})`
         : 'nenhum';
+      // A interpolacao, aberta: entre quais pontos a pressao atual caiu e o
+      // quanto ela ja andou entre eles. Foi a troca dos degraus por isto.
+      const detail = reading.meanIntervalDetail;
+      const interval = detail
+        ? `${round(detail.interval)}s`
+          + ` [p${round(detail.lowerStop.at)}=${round(detail.lowerStop.interval)}s`
+          + ` -> p${Number.isFinite(detail.upperStop.at) ? round(detail.upperStop.at) : 'inf'}`
+          + `=${round(detail.upperStop.interval)}s`
+          + ` @${Math.round((detail.fraction || 0) * 100)}%]`
+        : `${round(reading.currentMeanInterval)}s`;
+      const scorePathogen = reading.warning?.pathogen || 'meloidogyne';
+      const scores = (reading.candidateScores?.[scorePathogen] || []).slice(0, 4)
+        .map(entry => (
+          `    c${entry.logicIndex} s=${round(entry.score)}`
+          + ` nuvem=${round(entry.cloud)} dist=${round(entry.distance)}`
+          + ` tec=${round(entry.tissue)} les=${round(entry.lesion)}`
+          + ` ocu=${round(entry.occupancy)} prot=${round(entry.protection)}`
+        ))
+        .join('\n') || '    (nenhum candidato)';
       const history = (reading.eventHistory || []).slice(-5).reverse()
-        .map(entry => `    ${entry.kind} ${entry.pathogen || ''} c${entry.logicIndex ?? '?'} t=${round(entry.phaseTime)}s`)
+        .map(entry => (
+          `    ${entry.kind} ${entry.pathogen || ''} c${entry.logicIndex ?? '?'}`
+          + `${entry.originType ? ` <-${entry.originType}` : ''} t=${round(entry.phaseTime)}s`
+        ))
         .join('\n') || '    (nenhum)';
       readout.textContent = [
         `pressao total      : ${round(reading.totalPressure)}  [${reading.pressureBand}]`,
         `progresso          : ${round(reading.arrivalProgress)} / ${round(reading.currentThreshold)}`,
-        `intervalo medio    : ${round(reading.currentMeanInterval)}s`,
+        `intervalo medio    : ${interval}`,
         `cooldown           : ${round(reading.cooldownRemaining)}s`,
         `elegiveis          : ${(reading.eligiblePathogens || []).join(', ') || 'nenhum'}`,
         `ameacas ativas     : ${reading.activeThreatCount}`
           + ` (melo ${reading.activeByPathogen?.meloidogyne ?? 0},`
           + ` ralstonia ${reading.activeByPathogen?.ralstonia ?? 0})`,
-        `aviso              : ${warning}`,
+        `em deslocamento    : ${travel}`,
         `chegadas           : ${reading.totalArrivals}`
           + ` (melo ${reading.arrivalsByPathogen?.meloidogyne ?? 0},`
           + ` ralstonia ${reading.arrivalsByPathogen?.ralstonia ?? 0})`,
         `exposicao didatica : ${reading.tutorialPathogen || 'nenhuma nesta fase'}`
           + ` — ${reading.tutorialArrivalCompleted ? 'feita' : 'pendente'}`,
+        `candidatos (${scorePathogen}) :`,
+        scores,
         'ultimos eventos    :',
         history,
       ].join('\n');

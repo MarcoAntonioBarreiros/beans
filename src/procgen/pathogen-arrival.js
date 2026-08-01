@@ -1,5 +1,6 @@
 import { campaignManifest } from './campaign-manifest.js';
 import { createRandom } from './random.js';
+import { PATHOGEN_PRESSURE_DEFAULTS } from './pathogen-pressure.js';
 
 // CHEGADAS DE PATÓGENO — etapa 2: quando e onde
 // =============================================
@@ -66,6 +67,67 @@ export function meanIntervalForBand(band, settings = PATHOGEN_ARRIVAL_DEFAULTS) 
   return settings.safeMeanIntervalSeconds;
 }
 
+/**
+ * Intervalo médio pelo VALOR da pressão, não pela faixa.
+ *
+ * Com degraus, pressão 9 e pressão 15 produziam o mesmo relógio e depois um
+ * salto brusco em 16 — o jogador via a frequência mudar de repente sem nada
+ * ter mudado de repente no solo. Aqui os limites das faixas viram pontos de
+ * interpolação e o meio deles é contínuo.
+ *
+ *   pressão 0              -> safeMeanIntervalSeconds
+ *   safeBandMaximum        -> moderateMeanIntervalSeconds
+ *   moderateBandMaximum    -> highMeanIntervalSeconds
+ *   highBandMaximum        -> criticalMeanIntervalSeconds
+ *
+ * Acima do último ponto o intervalo continua caindo, devagar, com piso em
+ * `criticalMeanIntervalSeconds`: pressão absurda não vira chegada instantânea.
+ *
+ * A faixa continua sendo publicada — ela é boa como leitura visual. O que não
+ * serve mais é usá-la como relógio.
+ */
+export function continuousMeanInterval(
+  totalPressure,
+  pressureSettings = PATHOGEN_PRESSURE_DEFAULTS,
+  arrivalSettings = PATHOGEN_ARRIVAL_DEFAULTS,
+) {
+  const pressure = Math.max(0, Number(totalPressure) || 0);
+  const stops = [
+    { at: 0, interval: arrivalSettings.safeMeanIntervalSeconds },
+    { at: pressureSettings.safeBandMaximum, interval: arrivalSettings.moderateMeanIntervalSeconds },
+    { at: pressureSettings.moderateBandMaximum, interval: arrivalSettings.highMeanIntervalSeconds },
+    { at: pressureSettings.highBandMaximum, interval: arrivalSettings.criticalMeanIntervalSeconds },
+  ];
+  for (let index = 1; index < stops.length; index++) {
+    const previous = stops[index - 1];
+    const current = stops[index];
+    if (pressure > current.at) continue;
+    const span = Math.max(1e-6, current.at - previous.at);
+    const fraction = clamp((pressure - previous.at) / span, 0, 1);
+    return {
+      interval: previous.interval + (current.interval - previous.interval) * fraction,
+      lowerStop: previous,
+      upperStop: current,
+      fraction,
+    };
+  }
+  // Acima do último ponto: aproxima do piso sem nunca cruzá-lo. A meia-vida é
+  // a largura da última faixa, então dobrar a pressão ainda muda alguma coisa.
+  const last = stops[stops.length - 1];
+  const beyond = pressure - last.at;
+  const width = Math.max(1e-6, last.at - stops[stops.length - 2].at);
+  const decay = 1 - 1 / (1 + beyond / width);
+  return {
+    interval: Math.max(
+      arrivalSettings.criticalMeanIntervalSeconds,
+      last.interval * (1 - decay * 0.999),
+    ),
+    lowerStop: last,
+    upperStop: { at: Infinity, interval: arrivalSettings.criticalMeanIntervalSeconds },
+    fraction: decay,
+  };
+}
+
 // Primeira fase em que o patógeno é apresentado, lida do manifesto em vez de
 // escrita à mão: se a campanha for reordenada, isto acompanha.
 export function debutPhaseOf(pathogen) {
@@ -89,6 +151,7 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
   let tutorialArrivalCompleted = false;
   let tutorialArmed = false;
   let eventHistory = [];
+  let announcedPathogens = new Set();
 
   function level() { return state?.level || {}; }
   function phase() { return state?.campaign?.phase ?? level().campaignPhase ?? 0; }
@@ -107,8 +170,16 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
     return pressure()?.pressureBand || 'safe';
   }
 
+  function intervalDetail() {
+    return continuousMeanInterval(
+      pressure()?.totalPressure ?? 0,
+      pressure()?.settings || PATHOGEN_PRESSURE_DEFAULTS,
+      config,
+    );
+  }
+
   function currentMeanInterval() {
-    return meanIntervalForBand(currentBand(), config);
+    return intervalDetail().interval;
   }
 
   // Limiar determinístico da PRÓXIMA chegada. Depende da seed, do número da
@@ -241,33 +312,192 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
   }
 
   function selectTargetRoot(pathogen) {
-    const roots = candidateRoots();
-    if (!roots.length) return null;
-    const playerX = (state?.player?.x ?? 0) + (state?.player?.w ?? 0) / 2;
+    const scored = scoreTargets(pathogen);
+    if (!scored.length) return null;
+    // Coinfecção é permitida: a raiz não é excluída por já ter o outro
+    // patógeno. Se ela é o melhor alvo, ela é o alvo.
+    return scored[0].root;
+  }
+
+  // --- ORIGEM FÍSICA DA CHEGADA -------------------------------------------
+  //
+  // O patógeno vem de algum lugar. Nada de coordenada fixa de tela: a origem
+  // sai da câmera atual e dos limites reais do mundo, então funciona em
+  // qualquer zoom e em qualquer altura da silhueta.
+  //
+  // AMBIGUIDADE: "região necrótica publicada no nível" não existe.
+  // `necrotic-zone.js` é fundo decorativo, não dado de fase. O equivalente real
+  // é tecido MORTO: raiz em colapso (`rootHealth` baixo) ou com foco de fungo
+  // oportunista. É isso que uso, e é de onde faz sentido um inóculo partir.
+
+  const ORIGIN_TYPES = Object.freeze(['left', 'right', 'below', 'necrotic']);
+
+  const ORIGIN_LABEL = Object.freeze({
+    left: 'pela esquerda',
+    right: 'pela direita',
+    below: 'por baixo, do solo profundo',
+    necrotic: 'de um tecido radicular necrosado',
+  });
+
+  function viewportBounds() {
+    const cameraX = Number(state?.cameraX) || 0;
+    const cameraY = Number(state?.cameraY) || 0;
+    const width = Number(state?.visibleWorldWidth) || 1280;
+    const height = Number(state?.visibleWorldHeight) || 720;
+    return {
+      left: cameraX,
+      right: cameraX + width,
+      top: cameraY,
+      bottom: cameraY + height,
+    };
+  }
+
+  function necroticRoots() {
+    return candidateRoots().filter(root => (
+      (root.rootHealth ?? 1) < 0.3
+      || root.rootState === 'collapse'
+      || root.opportunisticFocus === true
+    ));
+  }
+
+  function selectOrigin(pathogen, targetRoot) {
     const random = createRandom(
-      `${seedValue()}:arrival-target:p${phase()}:n${totalArrivals}:a${attemptId()}`,
+      `${seedValue()}:arrival-origin:${pathogen}:n${totalArrivals}:a${attemptId()}`,
     );
-    let best = null;
-    let bestScore = -Infinity;
-    for (const root of roots) {
-      const centerX = root.x + root.w / 2;
-      const attraction = cloudAttraction(root);
-      // Sem nuvem nenhuma a escolha cai na progressão do jogador: uma raiz a
-      // trinta telas de distância não é uma ameaça, é um número no painel.
-      const ahead = centerX - playerX;
-      const proximity = ahead >= 0
-        ? 1 / (1 + ahead / 900)
-        : 0.35 / (1 + Math.abs(ahead) / 900);
-      const score = attraction * 3
-        + proximity
-        - protectionPenalty(root)
-        + random() * 0.15;
-      if (score > bestScore) {
-        bestScore = score;
-        best = root;
-      }
+    const view = viewportBounds();
+    const margin = 140 + random() * 120;
+    const targetX = targetRoot ? targetRoot.x + targetRoot.w / 2 : view.left + 200;
+    const targetY = targetRoot ? targetRoot.y : view.bottom - 100;
+
+    // A necrótica só entra se existir E estiver perto do trecho jogável: um
+    // foco a seis telas de distância não é uma origem, é um número.
+    const necrotic = necroticRoots().filter(root => (
+      Math.abs(root.x + root.w / 2 - targetX) < 2200
+    ));
+    const pool = necrotic.length ? ORIGIN_TYPES : ORIGIN_TYPES.filter(type => type !== 'necrotic');
+    const type = pool[Math.floor(random() * pool.length) % pool.length];
+
+    if (type === 'necrotic') {
+      const source = necrotic[Math.floor(random() * necrotic.length) % necrotic.length];
+      return {
+        originType: 'necrotic',
+        originX: source.x + 20 + random() * Math.max(1, source.w - 40),
+        originY: source.y + 18 + random() * 26,
+        sourceLogicIndex: source.logicIndex,
+      };
     }
-    return best;
+    if (type === 'below') {
+      const floor = Number(level().worldBottomY);
+      const belowY = Math.min(
+        Number.isFinite(floor) ? floor - 30 : view.bottom + 120,
+        view.bottom + margin,
+      );
+      return {
+        originType: 'below',
+        originX: targetX + (random() - 0.5) * 260,
+        originY: Math.max(targetY + 90, belowY),
+      };
+    }
+    const fromLeft = type === 'left';
+    return {
+      originType: fromLeft ? 'left' : 'right',
+      originX: fromLeft ? view.left - margin : view.right + margin,
+      originY: targetY + 30 + random() * 60,
+    };
+  }
+
+  // --- PONTUAÇÃO POR PATÓGENO ----------------------------------------------
+  //
+  // Separadas de propósito. Os dois querem coisas diferentes de uma raiz, e
+  // misturar isso numa função só foi o que fez a versão anterior escolher
+  // alvos que não diziam nada.
+
+  function rootHealthOf(root) {
+    const health = Number(root.rootHealth);
+    return Number.isFinite(health) ? clamp(health, 0, 1) : 1;
+  }
+
+  function occupancyOf(root) {
+    const lifecycle = systems.meloidogyneLifecycle;
+    if (!lifecycle) return 0;
+    const galls = (lifecycle.galls || []).filter(gall => gall.platform === root).length;
+    const inside = (lifecycle.juveniles || [])
+      .filter(juvenile => juvenile.targetRoot === root && juvenile.state !== 'seeking').length;
+    return galls + inside;
+  }
+
+  function ralstoniaOn(root) {
+    const foci = systems.ralstoniaControl?.foci || level().ralstoniaFoci || [];
+    return foci.some(focus => focus.root === root && !focus.neutralized);
+  }
+
+  /**
+   * Meloidogyne precisa de tecido VIVO: ela estabelece sítio de alimentação e
+   * vira fêmea ali. Raiz quase morta não serve — não é preferência estética, é
+   * o que a biologia do ciclo exige.
+   */
+  function scoreMeloidogyneTarget(root) {
+    const health = rootHealthOf(root);
+    const cloud = cloudAttraction(root);
+    const distance = playerDistanceScore(root);
+    // Abaixo de 0,25 o tecido está em colapso: penalidade forte, não exclusão.
+    const tissue = health < 0.25 ? -1.4 : health < 0.5 ? -0.2 : 0.35 + health * 0.4;
+    const occupancy = -0.3 * occupancyOf(root);
+    const protection = -protectionPenalty(root);
+    return {
+      logicIndex: root.logicIndex,
+      cloud,
+      distance,
+      tissue,
+      occupancy,
+      protection,
+      lesion: 0,
+      otherPathogen: ralstoniaOn(root) ? 0 : 0,
+      score: cloud * 3 + distance + tissue + occupancy + protection,
+    };
+  }
+
+  /**
+   * Ralstonia entra por ferida. Lesão, galha de Meloidogyne, dano de
+   * Rhizoctonia ou fungo oportunista AUMENTAM a preferência — mas nenhum é
+   * requisito: ela também alcança raiz intacta.
+   */
+  function scoreRalstoniaTarget(root) {
+    const health = rootHealthOf(root);
+    const cloud = cloudAttraction(root);
+    const distance = playerDistanceScore(root);
+    let lesion = 0;
+    if (occupancyOf(root) > 0) lesion += 0.6;
+    if ((root.rhizoctoniaColonization || 0) > 0.15) lesion += 0.5;
+    if (root.opportunisticFocus) lesion += 0.4;
+    if ((root.woundOpening || 0) > 0.1) lesion += 0.5;
+    // Dano moderado abre porta; colapso total já não sustenta colonização.
+    if (health < 0.7 && health > 0.2) lesion += 0.45;
+    const protection = -protectionPenalty(root);
+    return {
+      logicIndex: root.logicIndex,
+      cloud,
+      distance,
+      tissue: health < 0.2 ? -0.5 : 0,
+      occupancy: 0,
+      protection,
+      lesion,
+      otherPathogen: occupancyOf(root) > 0 ? 1 : 0,
+      score: cloud * 3 + distance + lesion + protection + (health < 0.2 ? -0.5 : 0),
+    };
+  }
+
+  function playerDistanceScore(root) {
+    const playerX = (state?.player?.x ?? 0) + (state?.player?.w ?? 0) / 2;
+    const ahead = root.x + root.w / 2 - playerX;
+    return ahead >= 0 ? 1 / (1 + ahead / 900) : 0.35 / (1 + Math.abs(ahead) / 900);
+  }
+
+  function scoreTargets(pathogen) {
+    const scorer = pathogen === 'ralstonia' ? scoreRalstoniaTarget : scoreMeloidogyneTarget;
+    return candidateRoots()
+      .map(root => ({ root, ...scorer(root) }))
+      .sort((left, right) => right.score - left.score);
   }
 
   // --- EXPOSIÇÃO DIDÁTICA ---------------------------------------------------
@@ -326,36 +556,118 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
 
   // --- AVISO E CHEGADA ------------------------------------------------------
 
+  /**
+   * Uma mensagem curta na PRIMEIRA aparição de cada patógeno na fase, e só.
+   *
+   * O que precisa ser dito é de onde ele vem e que ainda não chegou — daí em
+   * diante o próprio deslocamento é a informação, e repetir o texto a cada
+   * chegada transformaria a leitura do solo em leitura de legenda.
+   */
+  function announceFirstAppearance(pathogen, originType) {
+    if (!state || announcedPathogens.has(pathogen)) return;
+    announcedPathogens.add(pathogen);
+    const where = ORIGIN_LABEL[originType] || 'pelo solo';
+    state.toast = pathogen === 'ralstonia'
+      ? `Inóculo de Ralstonia atravessando o solo ${where}. Ele só coloniza ao alcançar a raiz.`
+      : `Juvenis J2 de Meloidogyne entrando ${where}. Eles nadam até achar uma raiz.`;
+    state.toastTime = 5.5;
+  }
+
+  /**
+   * Começa o DESLOCAMENTO. O aviso deixou de ser um retângulo pontilhado: é o
+   * próprio patógeno atravessando o solo, da origem até a rizosfera, durante
+   * `warningSeconds`. O jogador vê a ameaça chegando e tem esse tempo para
+   * preparar ou reforçar a prevenção.
+   *
+   * Os dois patógenos viajam de formas diferentes, e é isso que os torna
+   * reconhecíveis:
+   *
+   *   Meloidogyne — os J2 REAIS nascem na origem e nadam. Não há entidade
+   *   intermediária: eles já são o estágio inicial do ciclo, e por isso podem
+   *   trocar de raiz no meio do caminho se aparecer uma nuvem melhor.
+   *
+   *   Ralstonia — um inóculo ambiental temporário, porque o foco superficial
+   *   só pode existir quando o inóculo CHEGA. Criar o foco na origem seria
+   *   colonizar a raiz de longe.
+   */
   function beginWarning(pathogen, { tutorial = false, source = 'pressure', targetRoot = null } = {}) {
     const root = targetRoot || selectTargetRoot(pathogen);
     if (!root) return null;
+    const origin = selectOrigin(pathogen, root);
+    const random = createRandom(
+      `${seedValue()}:arrival-path:${pathogen}:n${totalArrivals}:a${attemptId()}`,
+    );
     warning = {
       pathogen,
       targetRoot: root,
       targetX: root.x + root.w / 2,
+      targetY: root.y,
+      ...origin,
+      travelProgress: 0,
+      estimatedTravelSeconds: config.warningSeconds,
       timeRemaining: config.warningSeconds,
+      // Curvatura e oscilação fixas por chegada: a trajetória é orgânica sem
+      // deixar de ser determinística.
+      curve: (random() - 0.5) * 220,
+      wobble: 0.6 + random() * 0.8,
+      wobblePhase: random() * Math.PI * 2,
       source,
       tutorial,
+      // Duas listas, e a diferença importa: `entities` é o que ESTE controlador
+      // move quadro a quadro (o inóculo da Ralstonia); `organisms` é o que já
+      // está no mundo e se move sozinho (os J2). Empurrar um J2 daqui seria
+      // duplicar o comando do ciclo dele.
+      entities: [],
+      organisms: [],
     };
-    record('warning', { pathogen, source, tutorial, logicIndex: root.logicIndex });
+
+    if (pathogen === 'meloidogyne') {
+      // Os J2 nascem NA ORIGEM, com a raiz escolhida apenas como preferência.
+      // Daqui em diante quem manda é o comportamento normal deles.
+      const api = systems.meloidogyneLifecycle?.introduceJ2Arrival;
+      const result = api
+        ? api({
+            originX: origin.originX,
+            originY: origin.originY,
+            preferredRoot: root,
+            source,
+          })
+        : null;
+      warning.organisms = result?.juveniles ? [...result.juveniles] : [];
+      // A chegada da Meloidogyne se completa no nascimento: os J2 JÁ são o
+      // ciclo. O percurso continua sendo visível porque são eles que nadam.
+      countArrival(pathogen, { tutorial, source, root, travelling: true });
+    } else {
+      // Entidade temporária, publicada no nível para o renderizador desenhar.
+      const inoculum = {
+        id: `ralstonia-inoculum-${totalArrivals}-${Math.round(Number(state?.time) || 0)}`,
+        x: origin.originX,
+        y: origin.originY,
+        originX: origin.originX,
+        originY: origin.originY,
+        targetRoot: root,
+        progress: 0,
+        wobblePhase: warning.wobblePhase,
+        source,
+      };
+      level().ralstoniaTravelInoculum = [
+        ...(level().ralstoniaTravelInoculum || []),
+        inoculum,
+      ];
+      warning.entities = [inoculum];
+    }
+
+    announceFirstAppearance(pathogen, origin.originType);
+    record('travel-start', {
+      pathogen, source, tutorial,
+      logicIndex: root.logicIndex,
+      originType: origin.originType,
+    });
     publish();
     return warning;
   }
 
-  function completeWarning() {
-    if (!warning) return null;
-    const { pathogen, targetRoot, tutorial, source } = warning;
-    // O aviso acompanha a raiz: se ela se moveu, a chegada acontece onde ela
-    // está agora, não onde estava cinco segundos atrás.
-    const targetX = targetRoot ? targetRoot.x + targetRoot.w / 2 : warning.targetX;
-    const api = arrivalApi(pathogen);
-    warning = null;
-    if (!api) return null;
-
-    const result = pathogen === 'meloidogyne'
-      ? api({ targetRoot, x: targetX, source })
-      : api({ targetRoot, x: targetX, source });
-
+  function countArrival(pathogen, { tutorial, source, root, travelling = false }) {
     totalArrivals++;
     arrivalsByPathogen = {
       ...arrivalsByPathogen,
@@ -366,12 +678,53 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
     cooldownRemaining = config.minimumCooldownSeconds;
     if (tutorial) tutorialArrivalCompleted = true;
     record('arrival', {
-      pathogen,
-      source,
-      tutorial,
-      logicIndex: targetRoot?.logicIndex ?? null,
-      ok: Boolean(result),
+      pathogen, source, tutorial,
+      logicIndex: root?.logicIndex ?? null,
+      travelling,
     });
+  }
+
+  /**
+   * Posição da entidade em deslocamento, num quadro qualquer.
+   *
+   * Curva leve mais oscilação: um inóculo não anda em linha reta pelo solo. O
+   * DESTINO é lido da raiz a cada quadro — se ela se mover, o percurso se
+   * recalcula em vez de apontar para onde ela estava.
+   */
+  function travelPointAt(entry, progress) {
+    const root = entry.targetRoot;
+    const targetX = root ? root.x + root.w / 2 : entry.targetX;
+    const targetY = root ? root.y + 12 : entry.targetY;
+    const t = clamp(progress, 0, 1);
+    const arc = Math.sin(t * Math.PI);
+    const x = entry.originX + (targetX - entry.originX) * t;
+    const y = entry.originY + (targetY - entry.originY) * t
+      + arc * (entry.curve ?? 0) * 0.35
+      + Math.sin(t * 9 + (entry.wobblePhase ?? 0)) * 14 * (entry.wobble ?? 1) * arc;
+    return { x, y };
+  }
+
+  function completeWarning() {
+    if (!warning) return null;
+    const { pathogen, targetRoot, tutorial, source } = warning;
+    const targetX = targetRoot ? targetRoot.x + targetRoot.w / 2 : warning.targetX;
+
+    if (pathogen === 'meloidogyne') {
+      // Os J2 já estão no mundo e já foram contados: o fim do percurso é só o
+      // fim do acompanhamento visual. Quem decide o resto é o ciclo deles.
+      warning = null;
+      publish();
+      return true;
+    }
+
+    // Ralstonia: o inóculo CHEGOU. Só agora o foco superficial pode existir.
+    level().ralstoniaTravelInoculum = (level().ralstoniaTravelInoculum || [])
+      .filter(entry => !warning.entities.includes(entry));
+    const api = arrivalApi('ralstonia');
+    warning = null;
+    if (!api) return null;
+    const result = api({ targetRoot, x: targetX, source });
+    countArrival('ralstonia', { tutorial, source, root: targetRoot });
     publish();
     return result;
   }
@@ -383,13 +736,45 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
     ].slice(-ARRIVAL_HISTORY_LIMIT);
   }
 
+  /**
+   * Os candidatos a alvo com a pontuação ABERTA, parcela por parcela.
+   *
+   * Sem isso o Phase Lab mostra qual raiz foi escolhida mas não por quê, e a
+   * diferença entre "a nuvem puxou" e "a lesão puxou" fica invisível — que é
+   * exatamente o que se precisa ver para ajustar os pesos.
+   */
+  function candidateScores(pathogen, limit = 6) {
+    return scoreTargets(pathogen).slice(0, limit).map(entry => ({
+      logicIndex: entry.logicIndex,
+      x: entry.root.x + entry.root.w / 2,
+      y: entry.root.y,
+      score: entry.score,
+      cloud: entry.cloud,
+      distance: entry.distance,
+      tissue: entry.tissue,
+      occupancy: entry.occupancy,
+      protection: entry.protection,
+      lesion: entry.lesion,
+      otherPathogen: entry.otherPathogen,
+    }));
+  }
+
   function publish() {
     const active = activeByPathogen();
+    const detail = intervalDetail();
     const reading = {
       arrivalProgress,
       currentThreshold,
-      currentRate: 1 / Math.max(1e-6, currentMeanInterval()),
-      currentMeanInterval: currentMeanInterval(),
+      currentRate: 1 / Math.max(1e-6, detail.interval),
+      currentMeanInterval: detail.interval,
+      // A interpolação fica exposta: dá para ver entre quais pontos a pressão
+      // atual caiu e o quanto ela já andou entre eles.
+      meanIntervalDetail: {
+        interval: detail.interval,
+        fraction: detail.fraction,
+        lowerStop: { at: detail.lowerStop.at, interval: detail.lowerStop.interval },
+        upperStop: { at: detail.upperStop.at, interval: detail.upperStop.interval },
+      },
       cooldownRemaining,
       warning: warning
         ? {
@@ -398,11 +783,24 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
             targetX: warning.targetRoot
               ? warning.targetRoot.x + warning.targetRoot.w / 2
               : warning.targetX,
+            targetY: warning.targetRoot ? warning.targetRoot.y : warning.targetY,
+            originType: warning.originType,
+            originX: warning.originX,
+            originY: warning.originY,
+            travelProgress: warning.travelProgress,
+            estimatedTravelSeconds: warning.estimatedTravelSeconds,
+            travelPoint: travelPointAt(warning, warning.travelProgress),
+            entities: [...warning.entities],
+            organisms: [...warning.organisms],
             timeRemaining: warning.timeRemaining,
             source: warning.source,
             tutorial: warning.tutorial,
           }
         : null,
+      candidateScores: {
+        meloidogyne: candidateScores('meloidogyne'),
+        ralstonia: candidateScores('ralstonia'),
+      },
       eligiblePathogens: eligiblePathogens(),
       activeThreatCount: active.meloidogyne + active.ralstonia,
       activeByPathogen: active,
@@ -424,6 +822,19 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
 
     if (warning) {
       warning.timeRemaining -= step;
+      warning.travelProgress = clamp(
+        1 - warning.timeRemaining / Math.max(1e-6, config.warningSeconds),
+        0,
+        1,
+      );
+      // O inóculo da Ralstonia se move de verdade; os J2 da Meloidogyne se
+      // movem pelo próprio ciclo e não precisam ser empurrados daqui.
+      for (const entry of warning.entities) {
+        const point = travelPointAt({ ...warning, ...entry }, warning.travelProgress);
+        entry.x = point.x;
+        entry.y = point.y;
+        entry.progress = warning.travelProgress;
+      }
       if (warning.timeRemaining <= 0) completeWarning();
       return publish();
     }
@@ -476,6 +887,22 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
   function cancelWarning() {
     if (!warning) return false;
     record('warning-cancelled', { pathogen: warning.pathogen });
+    // O inóculo em trânsito some junto: cancelar o percurso e deixar a
+    // entidade no mundo seria um patógeno órfão nadando para sempre.
+    if (warning.entities.length && state?.level) {
+      state.level.ralstoniaTravelInoculum = (state.level.ralstoniaTravelInoculum || [])
+        .filter(entry => !warning.entities.includes(entry));
+    }
+    // Os J2 desta chegada também saem. Eles são reais e já estão no solo, então
+    // "cancelar" só quer dizer alguma coisa se eles forem retirados — senão o
+    // botão do Lab pararia o acompanhamento e deixaria a ameaça de pé.
+    const juveniles = systems.meloidogyneLifecycle?.juveniles;
+    if (warning.organisms.length && Array.isArray(juveniles)) {
+      for (const organism of warning.organisms) {
+        const index = juveniles.indexOf(organism);
+        if (index >= 0) juveniles.splice(index, 1);
+      }
+    }
     warning = null;
     publish();
     return true;
@@ -501,7 +928,13 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
     tutorialArrivalCompleted = false;
     tutorialArmed = false;
     eventHistory = [];
-    if (state?.level) state.level.pathogenArrival = null;
+    announcedPathogens = new Set();
+    if (state?.level) {
+      state.level.pathogenArrival = null;
+      // Nenhum inóculo em trânsito sobrevive à reconstrução: ele é uma
+      // entidade da fase, não do controlador.
+      state.level.ralstoniaTravelInoculum = [];
+    }
   }
 
   /**
@@ -539,8 +972,13 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
     get eventHistory() { return [...eventHistory]; },
     eligiblePathogens,
     currentMeanInterval,
+    intervalDetail,
     preventionAvailableFromChunk,
     selectTargetRoot,
+    selectOrigin,
+    scoreTargets,
+    candidateScores,
+    travelPointAt,
     cloudAttraction,
     forceArrival,
     cancelWarning,

@@ -36,8 +36,15 @@ function fakeSystems() {
       eggMasses,
       introduceJ2Arrival(request) {
         meloArrivals.push(request);
-        juveniles.push({ alive: true, state: 'seeking' });
-        return request;
+        // Os J2 REAIS nascem na origem e o controlador guarda a referência
+        // deles para poder retirá-los se o percurso for cancelado. O duplo
+        // precisa devolver a lista, como o módulo devolve.
+        const created = [
+          { alive: true, state: 'seeking', x: request.originX ?? 0, y: request.originY ?? 0 },
+          { alive: true, state: 'seeking', x: request.originX ?? 0, y: request.originY ?? 0 },
+        ];
+        juveniles.push(...created);
+        return { ...request, juveniles: created, count: created.length };
       },
     },
     ralstoniaControl: {
@@ -335,7 +342,10 @@ test('15. uma chegada de Meloidogyne cria J2 externos em seeking', () => {
   assert.ok(juveniles.length >= 1);
   for (const juvenile of juveniles) {
     assert.equal(juvenile.state, 'seeking', 'o J2 não chegou no estágio externo');
-    assert.equal(juvenile.targetRoot, null, 'o J2 chegou já grudado numa raiz');
+    // A raiz agora é PREFERÊNCIA — o J2 nasce sabendo para onde nadar, mas
+    // continua fora dela, em `seeking`, e pode trocar de alvo no caminho.
+    assert.equal(juvenile.targetRoot, root, 'a preferência de raiz não foi aplicada');
+    assert.ok(juvenile.progress === 0, 'o J2 chegou já penetrando');
     // FORA da raiz: abaixo da superfície dela, no solo.
     assert.ok(juvenile.y > root.y, 'o J2 nasceu dentro da raiz');
   }
@@ -373,16 +383,32 @@ test('17 e 18. a Ralstonia chega na superfície e não entra no xilema', () => {
 // AVISO, DETERMINISMO E PHASE LAB
 // ---------------------------------------------------------------------------
 
-test('19. o aviso termina e produz exatamente uma chegada', () => {
+test('19. o percurso termina e produz exatamente uma chegada', () => {
+  // Ralstonia: o inóculo atravessa o solo e só vira foco AO CHEGAR. Colonizar
+  // de longe seria o mesmo defeito do marcador geométrico, agora em dados.
   const { state, arrival, systems } = harness({ band: 'critical' });
-  arrival.forceArrival('meloidogyne');
-  assert.ok(arrival.warning, 'o aviso não começou');
-  assert.equal(systems.meloArrivals.length, 0, 'chegou antes de o aviso terminar');
-  assert.equal(state.level.pathogenArrival.warning.pathogen, 'meloidogyne');
+  arrival.forceArrival('ralstonia');
+  assert.ok(arrival.warning, 'o percurso não começou');
+  assert.equal(systems.ralstoniaArrivals.length, 0, 'colonizou antes de chegar');
+  assert.equal(state.level.pathogenArrival.warning.pathogen, 'ralstonia');
   assert.ok(state.level.pathogenArrival.warning.targetRoot);
 
   advance(arrival, state, PATHOGEN_ARRIVAL_DEFAULTS.warningSeconds + 0.5);
-  assert.equal(systems.meloArrivals.length, 1, 'o aviso não virou exatamente uma chegada');
+  assert.equal(systems.ralstoniaArrivals.length, 1, 'o percurso não virou uma chegada');
+  assert.equal(arrival.warning, null);
+});
+
+test('19a. a Meloidogyne já nasce como J2 no início do percurso, e só uma vez', () => {
+  // Aqui é o contrário, e de propósito: o J2 é o próprio estágio inicial do
+  // ciclo. Não existe "inóculo de nematoide" a caminho — o que atravessa o solo
+  // é o organismo, então ele existe desde a origem.
+  const { state, arrival, systems } = harness({ band: 'critical' });
+  arrival.forceArrival('meloidogyne');
+  assert.equal(systems.meloArrivals.length, 1, 'os J2 não nasceram no início');
+  assert.equal(arrival.totalArrivals, 1, 'a chegada não foi contada uma vez só');
+
+  advance(arrival, state, PATHOGEN_ARRIVAL_DEFAULTS.warningSeconds + 0.5);
+  assert.equal(systems.meloArrivals.length, 1, 'a mesma chegada foi contada duas vezes');
   assert.equal(arrival.warning, null);
 });
 
@@ -429,11 +455,22 @@ test('23. as chegadas forçadas do Phase Lab usam as mesmas APIs', () => {
   assert.ok(systems.ralstoniaArrivals[0].targetRoot);
   assert.ok(Number.isFinite(systems.ralstoniaArrivals[0].x));
 
+  const juvenilesBefore = systems.meloidogyneLifecycle.juveniles.length;
   arrival.forceArrival('meloidogyne');
   assert.ok(arrival.warning);
+  assert.ok(
+    systems.meloidogyneLifecycle.juveniles.length > juvenilesBefore,
+    'os J2 do percurso não entraram no mundo',
+  );
   assert.equal(arrival.cancelWarning(), true);
   assert.equal(arrival.warning, null);
-  assert.equal(systems.meloArrivals.length, 0, 'cancelar o aviso deixou a chegada passar');
+  // Cancelar retira os J2 daquele percurso: eles são reais e já estavam no
+  // solo, entao "cancelar" só significa alguma coisa se eles saírem.
+  assert.equal(
+    systems.meloidogyneLifecycle.juveniles.length,
+    juvenilesBefore,
+    'cancelar o percurso deixou os J2 no solo',
+  );
 
   arrival.clearDiagnostics();
   assert.equal(arrival.totalArrivals, 0);

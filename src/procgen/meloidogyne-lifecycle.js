@@ -146,33 +146,60 @@ export function createMeloidogyneLifecycle({ state, entities }) {
    * muda: eles procuram raiz, penetram, migram, formam sítio de alimentação,
    * galha, fêmea, e as fêmeas põem massas. O ciclo continua inteiro; só o
    * ponto de entrada mudou.
+   *
+   * Os J2 nascem na ORIGEM FÍSICA da chegada — a borda do trecho visível, o
+   * solo profundo, um tecido necrosado — e não colados embaixo da raiz-alvo.
+   * Nascer no destino não é chegar: some com o percurso, que é justamente o
+   * intervalo em que o jogador ainda pode reforçar a prevenção.
+   *
+   * `preferredRoot` é PREFERÊNCIA, não destino fixo. Ela orienta o primeiro
+   * impulso e vale até o primeiro `retarget`; depois disso quem decide é
+   * `chooseRoot`, com o gradiente de exsudato que estiver no solo naquele
+   * momento. Uma nuvem melhor no caminho desvia a chegada, como deve.
    */
-  function introduceJ2Arrival({ targetRoot = null, x = null, count = null, source = 'arrival' } = {}) {
-    const root = targetRoot || roots()[0];
+  function introduceJ2Arrival({
+    targetRoot = null, preferredRoot = null, x = null,
+    originX = null, originY = null, count = null, source = 'arrival',
+  } = {}) {
+    const root = preferredRoot || targetRoot || roots()[0];
     if (!root) return null;
     prepareRoot(root);
-    const originX = Number.isFinite(x) ? x : root.x + root.w / 2;
+    const rootCenterX = root.x + root.w / 2;
+    // `x` continua aceito: é a assinatura antiga, e chamador que só sabe o
+    // eixo horizontal não deve parar de funcionar.
+    const spawnX = Number.isFinite(originX) ? originX
+      : Number.isFinite(x) ? x
+      : rootCenterX;
     // Determinístico pela seed da fase: quantidade, posição e direção saem do
     // mesmo lugar, então a mesma seed produz a mesma chegada.
     const random = createRandom(
       `${state.campaign?.seed || state.level?.seed || 'melo'}:j2-arrival:${arrivalCount++}`,
     );
+    const spawnY = Number.isFinite(originY) ? originY : root.y + 26 + random() * 18;
     const wanted = Number.isInteger(count) ? count : 2 + Math.floor(random() * 2);
     const created = [];
     for (let index = 0; index < wanted; index++) {
       if (juveniles.length >= 18) break;
-      const angle = -Math.PI / 2 + (random() - .5) * 1.2;
+      const jitterX = spawnX + (random() - .5) * 90;
+      const jitterY = spawnY + (random() - .5) * 46;
+      // Impulso inicial apontado para a raiz preferida, com dispersão: o grupo
+      // sai junto da origem mas não em formação.
+      const toRoot = Math.atan2((root.y + 14) - jitterY, rootCenterX - jitterX);
+      const angle = toRoot + (random() - .5) * .9;
+      const speed = 26 + random() * 18;
       const juvenile = {
         id: `melo-j2-${juvenileId++}`, generation: 0,
-        // No SOLO, abaixo da superfície da raiz: o J2 chega de fora.
-        x: originX + (random() - .5) * 90,
-        y: root.y + 26 + random() * 18,
-        vx: Math.cos(angle) * (18 + random() * 16),
-        vy: Math.sin(angle) * (18 + random() * 12),
-        state: 'seeking', targetRoot: null, targetX: originX, progress: 0,
-        age: 0, retarget: 0, cooldown: 0, phase: random() * TAU, alive: true,
+        x: jitterX, y: jitterY,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        state: 'seeking', targetRoot: root, targetX: rootCenterX, progress: 0,
+        // `retarget` positivo segura a preferência pelo primeiro trecho do
+        // percurso; zerado, `seek` chamaria `chooseRoot` no primeiro quadro e a
+        // preferência não teria efeito nenhum.
+        age: 0, retarget: 1.1 + random() * 1.2, cooldown: 0,
+        phase: random() * TAU, alive: true,
         trichodermaCaught: false, trichodermaLysis: 0,
-        arrivalSource: source,
+        arrivalSource: source, arrivalOriginX: jitterX, arrivalOriginY: jitterY,
       };
       juveniles.push(juvenile);
       created.push(juvenile);
@@ -180,7 +207,11 @@ export function createMeloidogyneLifecycle({ state, entities }) {
     }
     if (!created.length) return null;
     expose();
-    return { targetRoot: root, x: originX, count: created.length, juveniles: created, source };
+    return {
+      targetRoot: root, preferredRoot: root, x: spawnX,
+      originX: spawnX, originY: spawnY,
+      count: created.length, juveniles: created, source,
+    };
   }
 
   function updateEggs(dt) {

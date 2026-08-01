@@ -508,49 +508,157 @@ export function createPlatformVisuals({ state }) {
     ctx.restore();
   }
 
-  // AVISO DE CHEGADA DE PATOGENO
+  // CHEGADA DE PATOGENO — o que se ve e o patogeno, nao um marcador
   //
-  // Diferente dos overlays de debug: este e do JOGO, e aparece sempre. Durante
-  // `warningSeconds` o jogador ve ONDE o patogeno vai chegar e tem tempo de
-  // preparar ou reforcar a prevencao — a chegada e garantida, a infeccao nao.
+  // A versao anterior desenhava a INFORMACAO: elipse crescendo, retangulo
+  // pontilhado em volta da raiz-alvo, contagem regressiva em numeros. Isso
+  // dizia ao jogador onde olhar sem nunca mostrar a coisa em si, e o "aviso"
+  // aparecia num lugar onde ainda nao havia nada.
   //
-  // Segue a raiz: le a posicao dela a cada quadro em vez de guardar um x, para
-  // o aviso nao ficar apontando para onde a raiz estava.
-  function drawPathogenArrivalWarning(ctx) {
-    const warning = state.level.pathogenArrival?.warning;
-    if (!warning) return;
-    const root = warning.targetRoot;
-    if (!root) return;
-    const centerX = root.x + root.w / 2;
-    const topY = root.y;
-    const total = Math.max(0.001, state.level.pathogenArrival.settings?.warningSeconds || 5);
-    const remaining = Math.max(0, warning.timeRemaining);
-    const urgency = 1 - remaining / total;
-    const pulse = 0.55 + Math.sin(state.time * 9) * 0.28;
-    const color = warning.pathogen === 'ralstonia' ? '#ff7a6b' : '#ffc46b';
+  // Agora o aviso E o deslocamento. O que atravessa o solo e a propria entidade
+  // que vai infectar: os J2 da Meloidogyne (desenhados pelo ciclo dela, porque
+  // ja sao J2 de verdade desde a origem) e, aqui, o inoculo ambiental da
+  // Ralstonia. A janela de reacao continua existindo — ela so deixou de ser um
+  // relogio e virou distancia.
+  //
+  // Os marcadores geometricos nao foram apagados: foram movidos para o debug,
+  // onde medir posicao alvo e tempo restante e util.
 
+  function drawRalstoniaTravelInoculum(ctx) {
+    const travelling = state.level.ralstoniaTravelInoculum || [];
+    if (!travelling.length) return;
+    const time = state.time || 0;
     ctx.save();
-    ctx.globalAlpha = 0.28 + urgency * 0.34;
-    ctx.fillStyle = color;
-    // Halo no solo, logo abaixo da raiz: e de la que o inoculo vem.
-    ctx.beginPath();
-    ctx.ellipse(centerX, topY + 26, root.w * (0.42 + urgency * 0.2), 20 + urgency * 10, 0, 0, TAU);
-    ctx.fill();
+    for (const entry of travelling) {
+      const x = Number(entry.x);
+      const y = Number(entry.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const progress = clamp(entry.progress || 0, 0, 1);
+      const phase = entry.wobblePhase || 0;
+      // Direcao do deslocamento: da origem para onde ele esta agora. Serve para
+      // orientar os bastonetes, que assim "nadam" em vez de flutuar de lado.
+      const dx = x - (entry.originX ?? x);
+      const dy = y - (entry.originY ?? y);
+      const heading = Math.hypot(dx, dy) > 4 ? Math.atan2(dy, dx) : 0;
 
-    ctx.globalAlpha = 0.55 + pulse * 0.45;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2 + urgency * 2;
-    ctx.setLineDash([9, 7]);
-    ctx.strokeRect(root.x - 6, topY - 10, root.w + 12, root.h + 20);
-    ctx.setLineDash([]);
+      // Rastro: o solo revolvido atras do inoculo. Some rapido, entao nao vira
+      // uma linha desenhada — e um sulco recente.
+      ctx.globalAlpha = .16;
+      ctx.fillStyle = '#8c5a4a';
+      for (let step = 1; step <= 5; step++) {
+        const back = step * 13;
+        const trailX = x - Math.cos(heading) * back;
+        const trailY = y - Math.sin(heading) * back + Math.sin(time * 3 + step + phase) * 2.5;
+        ctx.beginPath();
+        ctx.arc(trailX, trailY, 5.5 - step * .7, 0, TAU);
+        ctx.fill();
+      }
 
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = color;
-    ctx.font = '700 13px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    const nome = warning.pathogen === 'ralstonia' ? 'Ralstonia' : 'Meloidogyne';
-    ctx.fillText(`${nome} se aproximando — ${remaining.toFixed(1)}s`, centerX, topY - 22);
+      // Halo de mucilagem: a suspensao bacteriana carrega agua do solo junto.
+      const swell = 1 + Math.sin(time * 4.6 + phase) * .08;
+      ctx.globalAlpha = .22 + progress * .16;
+      ctx.fillStyle = '#c96a54';
+      ctx.beginPath();
+      ctx.ellipse(x, y, 17 * swell, 12 * swell, heading, 0, TAU);
+      ctx.fill();
+
+      // As celulas. Bastonetes curtos, o mesmo formato do foco instalado — e a
+      // mesma bacteria, so que ainda em transito.
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(heading);
+      for (let cell = 0; cell < 5; cell++) {
+        const spin = time * 1.7 + cell * 1.31 + phase;
+        const cellX = Math.cos(spin) * (5 + cell * 1.6);
+        const cellY = Math.sin(spin * 1.4) * (4 + cell * .9);
+        ctx.save();
+        ctx.translate(cellX, cellY);
+        ctx.rotate(Math.sin(spin * .8) * .9);
+        ctx.globalAlpha = .72 + Math.sin(spin) * .18;
+        ctx.fillStyle = cell % 2 ? '#ffb59d' : '#ff8368';
+        ctx.beginPath();
+        ctx.roundRect(-4.6, -1.9, 9.2, 3.8, 1.9);
+        ctx.fill();
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Os marcadores geometricos, agora so no debug (Tab).
+   *
+   * Origem, trajetoria prevista, raiz-alvo e as pontuacoes dos candidatos. Fora
+   * do debug nada disso aparece: no jogo normal a leitura e o proprio patogeno
+   * atravessando o solo.
+   */
+  function drawPathogenArrivalDebug(ctx) {
+    if (!state.level.traversalDebugVisible) return;
+    const reading = state.level.pathogenArrival;
+    if (!reading) return;
+    ctx.save();
+    ctx.font = '600 11px ui-monospace, SFMono-Regular, Consolas, monospace';
     ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+
+    // Pontuacao dos candidatos do patogeno em rota (ou da Meloidogyne, quando
+    // nao ha nada a caminho): da para ver POR QUE o alvo foi aquele.
+    const pathogen = reading.warning?.pathogen || 'meloidogyne';
+    const candidates = reading.candidateScores?.[pathogen] || [];
+    for (let index = 0; index < candidates.length; index++) {
+      const candidate = candidates[index];
+      const best = index === 0;
+      ctx.globalAlpha = best ? .95 : .5;
+      ctx.fillStyle = best ? '#ffe08a' : '#9fb8d0';
+      ctx.fillText(
+        `#${candidate.logicIndex} s=${candidate.score.toFixed(2)}`
+        + ` nuvem=${candidate.cloud.toFixed(2)} dist=${candidate.distance.toFixed(2)}`
+        + ` tec=${candidate.tissue.toFixed(2)} les=${candidate.lesion.toFixed(2)}`,
+        candidate.x - 90,
+        candidate.y - 30 - (best ? 12 : 0),
+      );
+    }
+
+    const warning = reading.warning;
+    if (warning) {
+      const color = warning.pathogen === 'ralstonia' ? '#ff7a6b' : '#ffc46b';
+      const root = warning.targetRoot;
+      const targetX = warning.targetX;
+      const targetY = warning.targetY;
+
+      // Trajetoria prevista, amostrada com a mesma funcao que move a entidade.
+      ctx.globalAlpha = .6;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(warning.originX, warning.originY);
+      ctx.lineTo(warning.travelPoint?.x ?? targetX, warning.travelPoint?.y ?? targetY);
+      ctx.lineTo(targetX, targetY);
+      ctx.stroke();
+
+      // Raiz-alvo.
+      if (root) {
+        ctx.globalAlpha = .85;
+        ctx.strokeRect(root.x - 6, root.y - 10, root.w + 12, root.h + 20);
+      }
+      ctx.setLineDash([]);
+
+      // Origem.
+      ctx.globalAlpha = .9;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(warning.originX, warning.originY, 6, 0, TAU);
+      ctx.fill();
+      ctx.fillText(
+        `${warning.pathogen} <- ${warning.originType}`
+        + ` ${Math.round((warning.travelProgress || 0) * 100)}%`
+        + ` ${Math.max(0, warning.timeRemaining).toFixed(1)}s`,
+        warning.originX + 10,
+        warning.originY - 8,
+      );
+    }
     ctx.restore();
   }
 
@@ -714,7 +822,8 @@ export function createPlatformVisuals({ state }) {
     drawOptionalDetourDebug(ctx);
     drawTopologyT1Debug(ctx);
     drawAscentGateDebug(ctx);
-    drawPathogenArrivalWarning(ctx);
+    drawRalstoniaTravelInoculum(ctx);
+    drawPathogenArrivalDebug(ctx);
 
     ctx.restore();
   }
