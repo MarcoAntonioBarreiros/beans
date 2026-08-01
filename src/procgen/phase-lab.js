@@ -8,6 +8,7 @@ import {
   setPhaseManifestOverride,
 } from './campaign-manifest.js';
 import { PLAYER_SKINS, PLAYER_SKIN_STORAGE_KEY, resolvePlayerSkin } from '../render/player-skins.js';
+import { PATHOGEN_PRESSURE_DEFAULTS } from './pathogen-pressure.js';
 import {
   PLAYER_TUNING_LIMITS, getPlayerTuning, resetPlayerTuning, setPlayerTuning,
 } from '../render/player-skin-tuning.js';
@@ -236,6 +237,20 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
         <label>Cristais<input data-resource="crystals" type="number" min="0" max="100"></label>
         <label>Checkpoints<input data-resource="checkpoints" type="number" min="0" max="100"></label>
       </div></fieldset>
+      <fieldset><legend>Pressão de patógenos</legend>
+        <div class="resources">
+          <label>Espera (s)<input data-pressure="recoveryGraceSeconds" type="number" min="0" step="1"></label>
+          <label>Recup./s<input data-pressure="recoveryPointsPerSecond" type="number" min="0" step="0.05"></label>
+          <label>Basal<input data-pressure="basalPressure" type="number" min="0" step="0.5"></label>
+          <label>Peso N<input data-pressure="nitrogenDeficitWeight" type="number" min="0" step="0.5"></label>
+          <label>Peso Fe<input data-pressure="ironDeficitWeight" type="number" min="0" step="0.5"></label>
+          <label>Teto safe<input data-pressure="safeBandMaximum" type="number" min="0" step="1"></label>
+          <label>Teto moderate<input data-pressure="moderateBandMaximum" type="number" min="0" step="1"></label>
+          <label>Teto high<input data-pressure="highBandMaximum" type="number" min="0" step="1"></label>
+        </div>
+        <button type="button" data-pressure-defaults>Restaurar padrões da pressão</button>
+        <pre data-pressure-readout style="margin:8px 0 0; padding:8px; border-radius:8px; background:#04181bcc; color:#cdefe9; font:11px/1.45 ui-monospace,Consolas,monospace; white-space:pre-wrap;">sem leitura</pre>
+      </fieldset>
       <fieldset><legend>Raiz dependente de FBN</legend>
         <label><span><input data-nitrogen="enabled" type="checkbox" style="width:auto"> Ativada</span></label>
         <div class="resources">
@@ -323,6 +338,10 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
       for (const key of ['exudates', 'crystals', 'checkpoints']) {
         panel.querySelector(`[data-resource="${key}"]`).value = next.resources?.[key] ?? '';
       }
+      for (const key of Object.keys(PATHOGEN_PRESSURE_DEFAULTS)) {
+        const field = panel.querySelector(`[data-pressure="${key}"]`);
+        if (field) field.value = next.pathogenPressure?.[key] ?? PATHOGEN_PRESSURE_DEFAULTS[key];
+      }
       panel.querySelector('[data-nitrogen="enabled"]').checked = Boolean(next.nitrogenRoot?.enabled);
       for (const key of ['count', 'requiredFixationRate', 'growthDurationSeconds']) {
         panel.querySelector(`[data-nitrogen="${key}"]`).value = next.nitrogenRoot?.[key] ?? '';
@@ -367,6 +386,12 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
         allowedOrganisms: checked('[data-organisms]'),
         allowedPathogens: checked('[data-pathogens]'),
         resources: { exudates: resource('exudates'), crystals: resource('crystals'), checkpoints: resource('checkpoints') },
+        pathogenPressure: Object.fromEntries(
+          Object.keys(PATHOGEN_PRESSURE_DEFAULTS).map(key => {
+            const raw = Number(panel.querySelector(`[data-pressure="${key}"]`)?.value);
+            return [key, Number.isFinite(raw) ? raw : PATHOGEN_PRESSURE_DEFAULTS[key]];
+          }),
+        ),
         nitrogenRoot: {
           enabled: panel.querySelector('[data-nitrogen="enabled"]').checked,
           count: Number(panel.querySelector('[data-nitrogen="count"]').value),
@@ -513,6 +538,7 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
     windowObject.addEventListener('keydown', event => {
       if (event.ctrlKey && event.code === 'Enter') { event.preventDefault(); runApply(); }
     });
+    mountPressureReadout(panel, windowObject);
     return panel;
   }
 
@@ -530,5 +556,62 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
     exportManifest: () => JSON.stringify(manifest, null, 2),
   };
   windowObject.miguelitoPhaseLab = api;
+  // DIAGNOSTICO AO VIVO DA PRESSAO
+  // O painel do Lab e estatico; esta leitura precisa acompanhar o quadro. Um
+  // intervalo curto basta e nao disputa com o laco de render.
+  function mountPressureReadout(panel, windowObject) {
+    const readout = panel.querySelector('[data-pressure-readout]');
+    const defaultsButton = panel.querySelector('[data-pressure-defaults]');
+    if (!readout) return;
+    defaultsButton?.addEventListener('click', () => {
+      for (const [key, value] of Object.entries(PATHOGEN_PRESSURE_DEFAULTS)) {
+        const field = panel.querySelector(`[data-pressure="${key}"]`);
+        if (field) field.value = value;
+      }
+      windowObject.miguelitoSim?.pathogenPressure?.restoreDefaults();
+    });
+    // Aplica no sistema vivo assim que o campo muda, sem exigir regerar a fase:
+    // ajustar peso durante o playtest e o motivo de estes campos existirem.
+    for (const key of Object.keys(PATHOGEN_PRESSURE_DEFAULTS)) {
+      panel.querySelector(`[data-pressure="${key}"]`)?.addEventListener('change', event => {
+        const value = Number(event.target.value);
+        if (!Number.isFinite(value)) return;
+        windowObject.miguelitoSim?.pathogenPressure?.configure({ [key]: value });
+      });
+    }
+    const render = () => {
+      const reading = windowObject.miguelitoSim?.state?.level?.pathogenPressure;
+      if (!reading) {
+        readout.textContent = 'sem leitura (fase não iniciada)';
+        return;
+      }
+      const round = value => (Math.round(Number(value) * 100) / 100).toFixed(2);
+      const history = (reading.applicationHistory || []).slice(-5).reverse()
+        .map(entry => (
+          `    #${entry.applicationId} nuvens=${entry.activeCloudCountBeforeUse}`
+          + ` custo=${entry.cost} ${round(entry.pointsBefore)}→${round(entry.pointsAfter)}`
+          + ` t=${round(entry.phaseTime)}s`
+        ))
+        .join('\n') || '    (nenhuma)';
+      readout.textContent = [
+        `pontos de exsudato : ${round(reading.exudatePoints)}`,
+        `nuvens ativas      : ${reading.activeCloudCount}`,
+        `custo do proximo   : ${reading.nextUseCost}`,
+        `recuperacao        : ${reading.recoveryState}`,
+        `espera restante    : ${round(reading.recoveryDelayRemaining)}s`,
+        `velocidade         : ${round(reading.recoveryPointsPerSecond)}/s`,
+        `deficit de N       : ${round(reading.nitrogenDeficitPressure)}`,
+        `deficit de Fe      : ${round(reading.ironDeficitPressure)}`,
+        `basal              : ${round(reading.basalPressure)}`,
+        `PRESSAO TOTAL      : ${round(reading.totalPressure)}  [${reading.pressureBand}]`,
+        'ultimas aplicacoes :',
+        history,
+      ].join('\n');
+    };
+    render();
+    const timer = windowObject.setInterval(render, 250);
+    windowObject.addEventListener?.('beforeunload', () => windowObject.clearInterval(timer));
+  }
+
   return { enabled, get config() { return config; }, get manifest() { return manifest; }, configureCampaign, mount, api };
 }

@@ -11,7 +11,7 @@ function nearestPointOnPlatform(x, y, platform) {
   };
 }
 
-export function createEcologicalGameplay({ state, input, entities, ecology }) {
+export function createEcologicalGameplay({ state, input, entities, ecology, pathogenPressure = null }) {
   const clouds = [];
   const biofilms = [];
   const formingBiofilms = new Map();
@@ -65,6 +65,15 @@ export function createEcologicalGameplay({ state, input, entities, ecology }) {
       return;
     }
     player.exudates--;
+    // A aplicacao esta CONFIRMADA aqui: o `return` la em cima ja descartou o
+    // caso "sem exsudatos" e `prepare` ja filtrou a tecla segurada.
+    //
+    // O registro vem ANTES do `shift`. Com o teto de quatro nuvens, contar
+    // depois devolveria 3 (custo 8) para quem ja esta no teto, quando o custo
+    // certo e 16. O id da nuvem que vai nascer e o identificador da aplicacao:
+    // e incremental e unico dentro da fase.
+    const applicationId = nextCloudId;
+    pathogenPressure?.registerSuccessfulExudateUse(applicationId);
     if (clouds.length >= 4) clouds.shift();
     const cloud = {
       id: nextCloudId++,

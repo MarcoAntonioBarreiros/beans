@@ -22,6 +22,7 @@ import { createAzospirillumNitrogen } from './azospirillum-nitrogen.js';
 import { createMeloidogyneLifecycle } from './meloidogyne-lifecycle.js';
 import { createGoalSystem } from './goal-system.js';
 import { createEcologicalGameplay } from './ecological-gameplay.js';
+import { createPathogenPressure } from './pathogen-pressure.js';
 import { createPathogenSurvival } from './pathogen-survival.js';
 import { createNoopAudio } from '../game-audio.js';
 import { DISCOVERABLE_MICROBE_IDS } from '../audio-manifest.js';
@@ -236,7 +237,10 @@ export function createSimulator({
   const trichodermaColonies = createTrichodermaColonies({ state, input, ecology, entities });
   const trichoderma = createTrichodermaGrowth({ state, entities, ecology, colonies: trichodermaColonies });
   const goal = createGoalSystem({ state, entities });
-  const gameplay = createEcologicalGameplay({ state, input, entities, ecology });
+  // Pressao de patogenos: nasce ANTES do gameplay porque e ele quem registra a
+  // aplicacao de exsudato no momento em que ela e confirmada.
+  const pathogenPressure = createPathogenPressure({ state });
+  const gameplay = createEcologicalGameplay({ state, input, entities, ecology, pathogenPressure });
   const beneficialInoculants = createBeneficialInoculants({ state, input, ecology, entities });
   const pseudomonasSiderophores = createPseudomonasSiderophores({
     state,
@@ -347,6 +351,7 @@ export function createSimulator({
     mycorrhiza.clear();
     goal.clear();
     gameplay.clear();
+    pathogenPressure.clear();
     pathogenSurvival.clear();
     phosphateSolubilization.clear();
     state.level = createEmptyLevel();
@@ -381,6 +386,7 @@ export function createSimulator({
     pathogenSurvival.reset();
     phosphateSolubilization.reset();
     renewableExudates.reset();
+    pathogenPressure.reset();
   }
 
   function setInputs(newKeys) {
@@ -435,6 +441,9 @@ export function createSimulator({
       inoculants: beneficialInoculants,
       inoculumSelection,
     });
+    // Depois de `gameplay.update`, que e quem expira as nuvens: a leitura tem
+    // de enxergar a contagem ja atualizada deste quadro.
+    pathogenPressure.update(dt);
     goal.update(dt);
     if (state.toastTime > 0) state.toastTime -= dt;
   }
@@ -446,7 +455,7 @@ export function createSimulator({
     trichoderma, recruitment, trichodermaColonies, beneficialInoculants,
     pseudomonasSiderophores, opportunisticFungus, bacillusBioprotection, bacillusBioprotectionSafety,
     rhizobiumNodulation, nitrogenRootDevelopment, azospirillumRootGrowth, azospirillumRootSafety,
-    azospirillumNitrogen, renewableExudates,
+    azospirillumNitrogen, renewableExudates, pathogenPressure,
     meloidogyneLifecycle, pathogenSurvival, goal, gameplay,
     phosphateSolubilization,
     inoculumSelection,

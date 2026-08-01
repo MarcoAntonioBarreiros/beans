@@ -16,6 +16,7 @@ import {
   validateCampaignManifest,
 } from './campaign-manifest.js';
 import { createRandom } from './random.js';
+import { PATHOGEN_PRESSURE_DEFAULTS } from './pathogen-pressure.js';
 
 // v5: o config salvo e usado CRU — `readConfig` devolve o que esta no
 // armazenamento sem mesclar com os padroes. Isso e proposital (o painel manda),
@@ -127,6 +128,9 @@ export function createDefaultPhaseLabConfig(phase = 1) {
     meloidogyne: {
       ...(base.meloidogyne || MELOIDOGYNE_DEFAULTS),
     },
+    // Pesos da pressao de patogenos: provisorios de playtest, por isso vivem no
+    // config do Lab e nao no manifesto de producao.
+    pathogenPressure: { ...PATHOGEN_PRESSURE_DEFAULTS },
     ralstonia: {
       ...(base.ralstonia || RALSTONIA_DEFAULTS),
     },
@@ -186,6 +190,10 @@ export function buildPhaseLabManifest(config) {
     .filter(type => ECOLOGY_ROAMING_TYPES.includes(type));
   const allowedPathogens = [...new Set(config.allowedPathogens || [])]
     .filter(type => PATHOGEN_SYSTEMS.includes(type) && !MVP_EXCLUDED_PATHOGENS.includes(type));
+  const pathogenPressure = {
+    ...PATHOGEN_PRESSURE_DEFAULTS,
+    ...(config.pathogenPressure || {}),
+  };
   const nitrogenRootInput = config.nitrogenRoot || base.nitrogenRoot || NITROGEN_ROOT_DEFAULTS;
   const nitrogenRoot = {
     ...(base.nitrogenRoot || NITROGEN_ROOT_DEFAULTS),
@@ -269,6 +277,7 @@ export function buildPhaseLabManifest(config) {
     unlockEvents,
     pathogenDebuts,
     nitrogenRoot,
+    pathogenPressure,
     azospirillumRootLadder,
     azospirillumNitrogen,
     mycorrhizaBridge,

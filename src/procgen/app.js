@@ -629,7 +629,18 @@ const PHASE_TOPOLOGY_VARIANTS = [
   'phase-topology-t3',
   'optional-detour-topology-t3',
 ];
-const phaseTopologyMode = PHASE_TOPOLOGY_VARIANTS.includes(optionalDetourVariant);
+
+// AGORA E O JOGO, nao mais um modo de playtest.
+//
+// A silhueta planejada, os quatro portoes da rota e o desvio topologico
+// nasceram atras de `?v=` para poderem ser comparados com o que estava no ar.
+// A comparacao acabou: eles passam a ser o comportamento PADRAO da fase 10.
+//
+// `?v=classic` continua entregando a geracao antiga, para quando for preciso
+// olhar os dois lado a lado. Os nomes antigos seguem valendo — quem tiver um
+// link salvo nao cai fora de modo nenhum, que foi exatamente o acidente do T3b.
+const CLASSIC_PHASE_VARIANTS = ['classic', 'phase-classic'];
+const phaseTopologyMode = !CLASSIC_PHASE_VARIANTS.includes(optionalDetourVariant);
 
 const optionalDetourTopologyMode =
   optionalDetourVariant === 'optional-detour-topology-t1'
@@ -639,6 +650,9 @@ const optionalDetourPlaytestMode = [
   'optional-detour-cp1',
   'optional-detour-cp2',
 ].includes(optionalDetourVariant) || optionalDetourTopologyMode;
+// PHASE_TOPOLOGY_VARIANTS continua exportando os nomes historicos para o painel
+// de debug conseguir dizer que o link antigo e equivalente ao padrao de hoje.
+void PHASE_TOPOLOGY_VARIANTS;
 
 let sim = null;
 
@@ -1046,6 +1060,11 @@ function prepareLevel() {
   installFinalGoal(levelData);
   applyInitialRootHealth(levelData, campaign.phase);
   synchronizeWorldBounds(levelData);
+  // Pesos da pressao de patogenos: o painel manda, como em tudo o mais do Lab.
+  if (phaseLab.enabled && phaseLab.config?.pathogenPressure) {
+    sim.pathogenPressure?.configure(phaseLab.config.pathogenPressure);
+  }
+  sim.pathogenPressure?.publish();
 }
 
 // Saúde da raiz como feedback central: as raízes começam DANIFICADAS e só sobem
