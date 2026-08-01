@@ -12,3 +12,6 @@ Thumbs.db
 *.log
 
 *.zip
+
+# Bundles de entrega (o push direto e bloqueado pela politica de egresso)
+*.bundle
