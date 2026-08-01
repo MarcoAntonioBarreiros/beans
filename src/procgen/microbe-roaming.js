@@ -1,3 +1,4 @@
+import { organismVerticalBounds } from './world-bounds.js';
 import { H } from '../core/constants.js';
 import { createMicrobeEcology, MICROBE_MOTION_PROFILES } from './microbe-ecology.js';
 
@@ -87,12 +88,15 @@ export function createRoamingMicrobeEcology({ state, entities }) {
 
   function buildNiches() {
     niches.length = 0;
+    // Faixa tirada da geometria real, não da altura de uma tela: ver
+    // `organismVerticalBounds`.
+    const vertical = organismVerticalBounds(state.level, { topMargin: 70, bottomMargin: 104 });
     state.level.platforms.forEach((platform, index) => {
       if (platform.w < 62) return;
       const lift = 58 + ((index * 41) % 104);
       niches.push({
         x: platform.x + platform.w / 2,
-        y: clamp(platform.y - lift, 74, H - 104),
+        y: clamp(platform.y - lift, Math.min(74, vertical.minY), vertical.maxY),
         kind: platform.final ? 'goal-root' : 'root',
         platformIndex: index,
         recovery: Boolean(platform.recovery),
@@ -101,7 +105,7 @@ export function createRoamingMicrobeEcology({ state, entities }) {
     state.level.exudates.forEach((exudate, index) => {
       niches.push({
         x: exudate.x,
-        y: clamp(exudate.y - 28, 70, H - 104),
+        y: clamp(exudate.y - 28, vertical.minY, vertical.maxY),
         kind: 'exudate',
         resourceIndex: index,
         recovery: false,
@@ -110,7 +114,7 @@ export function createRoamingMicrobeEcology({ state, entities }) {
     state.level.crystals.forEach((crystal, index) => {
       niches.push({
         x: crystal.x + crystal.w / 2,
-        y: clamp(crystal.y - 42, 72, H - 110),
+        y: clamp(crystal.y - 42, Math.min(72, vertical.minY), H - 110),
         kind: 'mineral',
         mineralIndex: index,
         recovery: false,
@@ -192,9 +196,10 @@ export function createRoamingMicrobeEcology({ state, entities }) {
     group.direction = Math.sign((niches[group.toIndex]?.x || center.x) - center.x) || group.direction;
     const a = niches[group.fromIndex] || center;
     const b = niches[group.toIndex] || center;
+    const curveBounds = organismVerticalBounds(state.level, { topMargin: 80, bottomMargin: 120 });
     group.curve = {
       x: (a.x + b.x) / 2 + (Math.random() - .5) * 190,
-      y: clamp((a.y + b.y) / 2 + (Math.random() - .5) * 260, 80, H - 120),
+      y: clamp((a.y + b.y) / 2 + (Math.random() - .5) * 260, curveBounds.minY, curveBounds.maxY),
     };
   }
 

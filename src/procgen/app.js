@@ -409,13 +409,25 @@ function phaseSilhouetteDebug(level) {
       )).join(' ')}`
     : `\n  PORTOES DA ROTA: nenhum`
       + `${missing.length ? ` — habilidades bloqueadas: ${missing.join('/')}` : ' (nenhuma zona serviu)'}`;
+  // A FBN e o QUARTO desafio da rota principal, e ja funcionava antes destes
+  // tres: `generateUnderdevelopedNitrogenRoots` remove a plataforma-alvo e so
+  // o nodulo a devolve. Aparecia em 15 de 16 seeds e ninguem via, porque nao
+  // estava no painel junto dos outros.
+  const nitrogenLine = (level.nitrogenRoots || []).length
+    ? `\n  PORTOES DE FBN: ${(level.nitrogenRoots || []).map(root => (
+        `c${root.targetLogicIndex ?? root.hostLogicIndex}`
+        + `/vao${Math.round(root.blockedGapWidth || 0)}px`
+        + `[${root.developed ? 'raiz devolvida' : 'aguarda nodulo'}]`
+      )).join(' ')}`
+    : '\n  PORTOES DE FBN: nenhum';
   return `\nSILHUETA DA FASE: ${plan.familyId} (${plan.familyLabel})`
     + `\n  zonas: ${plan.zones.map(zone => `${zone.role}/${zone.verticalIntent}`).join(' > ')}`
     + `\n  chunks: ${plan.zones.map(zone => `${zone.fromChunk}-${zone.toChunk}`).join(' | ')}`
     + `\n  Y planejado: ${plan.zones.map(zone => zone.endY).join(' -> ')}`
     + ` | amplitude ${plan.verticalRange}px`
     + ` | subidas ${plan.climbZones} descidas ${plan.dropZones}`
-    + gateLine;
+    + gateLine
+    + nitrogenLine;
 }
 
 function topologyDetourDebug(level) {

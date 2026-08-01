@@ -16,6 +16,8 @@ import { OPTIONAL_DETOUR_MIN_PRIMARY_CLEARANCE } from '../src/procgen/optional-d
 import { createPhaseTenTopologyDetour } from '../src/procgen/optional-detour-topology-synthesizer.js';
 import { generateCampaignEncounters } from '../src/procgen/campaign-encounters.js';
 import { createPhosphateDepositAt } from '../src/procgen/phosphate-solubilization.js';
+import { generateUnderdevelopedNitrogenRoots } from '../src/procgen/nitrogen-root.js';
+import { getPhaseManifest } from '../src/procgen/campaign-manifest.js';
 import {
   ASCENT_GATE_MINIMUM_CHUNK,
   AZO_ASCENT_RISE_RANGE,
@@ -634,6 +636,51 @@ test('portão - dois portões nunca ficam colados', () => {
       );
     }
   }
+});
+
+
+test('portão - a FBN nunca rouba a plataforma de outro portão', () => {
+  // A raiz nitrogenada REMOVE a plataforma-alvo para que só o nódulo a
+  // devolva. Se ela escolher o alvo de uma ponte ou o hospedeiro de uma
+  // parede, o outro desafio fica sem para onde ir: dois portões no mesmo
+  // bloco não são um combo, são um softlock.
+  let checkedSeeds = 0;
+  let nitrogenGates = 0;
+  for (const entry of ALL_GATES) {
+    const level = entry.level;
+    const gates = level.routeGates || [];
+    if (!gates.length) continue;
+    const encounters = generateCampaignEncounters({
+      platforms: level.platforms,
+      phase: 10,
+      seedValue: entry.seed,
+    });
+    generateUnderdevelopedNitrogenRoots({
+      level,
+      phase: 10,
+      seedValue: entry.seed,
+      encounters,
+      config: getPhaseManifest(10)?.nitrogenRoot,
+    });
+    const claimed = new Set();
+    for (const root of level.nitrogenRoots || []) {
+      nitrogenGates++;
+      for (const platform of [root.targetPlatform, root.leftPlatform, root.rightPlatform]) {
+        if (platform) claimed.add(platform);
+      }
+    }
+    for (const gate of gates) {
+      assert.equal(
+        claimed.has(gate.host) || claimed.has(gate.destination),
+        false,
+        `${entry.seed}: FBN tomou a plataforma do portão ${gate.kind} em c${gate.chunkIndex}`,
+      );
+    }
+    checkedSeeds++;
+  }
+  assert.ok(checkedSeeds >= 8, `só ${checkedSeeds} seeds conferidas`);
+  // E a FBN continua existindo: o objetivo é conviver, não excluir.
+  assert.ok(nitrogenGates >= 6, `FBN quase sumiu: ${nitrogenGates} portões`);
 });
 
 test('silhueta - o fallback é declarado, nunca silencioso', () => {

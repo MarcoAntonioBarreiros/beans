@@ -1,3 +1,4 @@
+import { organismVerticalBounds } from './world-bounds.js';
 import { H, W } from '../core/constants.js';
 import { drawInoculatedBacillusSprite, isBacillusSpriteEnabled } from '../render/bacillus-sprite.js';
 import { organismSprites } from '../render/organism-sprites.js';
@@ -211,10 +212,14 @@ export function createBeneficialInoculants({ state, input, ecology, entities }) 
       const lateral = (column - 1) * (34 + row * 4);
       const targetX = playerX - state.player.facing * (80 + row * 28) + lateral;
       const escortLift = agent.type === 'bacillus' ? 74 : 0;
+      // A escolta tem de ficar ACIMA de Miguelito. Com o teto fixo em 62 ela
+      // aparecia ABAIXO dele sempre que a rota subia para Y negativo — o
+      // alvo caía fora do clamp e virava o chão da tela antiga.
+      const escortBounds = organismVerticalBounds(state.level);
       const targetY = clamp(
         playerY - 42 - row * 27 - escortLift + Math.sin(state.time * 2.25 + index * .8) * 10,
-        62,
-        H - 68,
+        escortBounds.minY,
+        escortBounds.maxY,
       );
       const dx = targetX - agent.x;
       const dy = targetY - agent.y;

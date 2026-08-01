@@ -45,6 +45,16 @@ function colonizableRoot(platform, allowPromotion = false) {
     && !platform.azospirillumStructure
     && !platform.azospirillumLadderHost
     && !platform.azospirillumLadderDestination
+    // Portões de ponte e de parede, pela mesma razão que a escada já estava
+    // nesta lista: a raiz nitrogenada REMOVE a plataforma-alvo, e remover o
+    // alvo de uma ponte ou o hospedeiro de uma parede deixa o outro desafio
+    // sem para onde ir. Dois portões no mesmo bloco não são um combo, são um
+    // softlock.
+    && !platform.bridgeGate
+    && !platform.bridgeGateHost
+    && !platform.phosphateWallGate
+    && !platform.ascentGate
+    && !platform.ascentGateHost
     && !platform.nitrogenRootCollider
     && !platform.fixedObjective
     && !platform.signatureChallenge

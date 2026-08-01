@@ -58,6 +58,36 @@ export function calculateWorldGeometryBounds(level) {
   };
 }
 
+// FAIXA VERTICAL DOS ORGANISMOS
+// =============================
+//
+// Os módulos de organismo prendiam Y em faixas absolutas — [74, H-104] para os
+// nichos, [62, H-68] para a escolta que segue Miguelito. Escritas quando o
+// mundo tinha UMA tela de altura, viraram um teto: com a silhueta planejada a
+// rota principal sobe até Y negativo, e todo organismo ficava pendurado no
+// fundo da tela antiga. A escolta chegava a aparecer ABAIXO do jogador em vez
+// de acima dele, porque `playerY - 42` caía fora do clamp.
+//
+// É o mesmo defeito da senoide de `geometry.js`, do `[220, 560]` e do
+// `[250, 555]` do fallback: limite absoluto sobrevivendo a uma mudança de
+// escala do mundo. Aqui o limite passa a sair da geometria real.
+//
+// A abertura é só para CIMA, de propósito. Embaixo continuam os hazards em
+// y=674, e afrouxar aquele lado poria organismo dentro da zona letal — somar
+// sem quebrar o que já funcionava.
+const ORGANISM_HEADROOM = 130;
+
+export function organismVerticalBounds(level, { topMargin = 62, bottomMargin = 68 } = {}) {
+  const defaultMinimum = topMargin;
+  const geometryTop = Number(level?.geometryTopY);
+  return {
+    minY: finite(geometryTop)
+      ? Math.min(defaultMinimum, geometryTop - ORGANISM_HEADROOM)
+      : defaultMinimum,
+    maxY: H - bottomMargin,
+  };
+}
+
 export function synchronizeWorldBounds(level, visibleWorldHeight = H) {
   const geometry = calculateWorldGeometryBounds(level);
   const visibleHeight = Math.max(1, Number(visibleWorldHeight) || H);

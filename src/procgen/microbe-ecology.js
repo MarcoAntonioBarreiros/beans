@@ -1,3 +1,4 @@
+import { organismVerticalBounds } from './world-bounds.js';
 import { H, W } from '../core/constants.js';
 import { microbeCatalog } from '../data/microbes.js';
 import { drawRoamingBacillusSprite } from '../render/bacillus-sprite.js';
@@ -425,7 +426,9 @@ export function createMicrobeEcology({ state, entities }) {
     const requestedCount = zone.id === 'oportunista' ? 1 : profile.count;
     const count = Math.min(requestedCount, maxAgents - ecology.agents.length);
     const rnd = seededRandom(hashSeed(`${zone.id}:${Math.round(zone.x)}:${Math.round(zone.y)}:${zone.index}`));
-    const homeY = clamp(zone.y - 32, 95, H - 100);
+    // Ver `organismVerticalBounds`: o teto vem da geometria, não da tela.
+    const vertical = organismVerticalBounds(state.level, { topMargin: 95, bottomMargin: 100 });
+    const homeY = clamp(zone.y - 32, vertical.minY, vertical.maxY);
 
     for (let i = 0; i < count; i++) {
       const angle = rnd() * TAU;
@@ -439,7 +442,7 @@ export function createMicrobeEcology({ state, entities }) {
         homeY,
         radius: zone.r || profile.radius,
         x: zone.x + Math.cos(angle) * radius,
-        y: clamp(homeY + Math.sin(angle) * radius * .62, 70, H - 70),
+        y: clamp(homeY + Math.sin(angle) * radius * .62, Math.min(70, vertical.minY), H - 70),
         vx: Math.cos(direction) * profile.speed * (.45 + rnd() * .35),
         vy: Math.sin(direction) * profile.speed * (.35 + rnd() * .25),
         targetVX: 0,
