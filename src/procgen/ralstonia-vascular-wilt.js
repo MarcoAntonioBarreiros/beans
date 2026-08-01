@@ -1678,7 +1678,19 @@ export function createRalstoniaVascularWilt({ state, entities, inoculants, pseud
   // precisa fechar exatamente os save() que abrir. Uma versão anterior chamava
   // ctx.restore() sem nenhum save() próprio: isso desempilhava a translação da
   // câmera e todo sistema desenhado DEPOIS da Ralstonia perdia a referência.
+  // TRILHOS DE CARGA — agora so no debug.
+  //
+  // Carga superficial, carga vascular, porta de entrada, barreira de Bacillus,
+  // supressao de Pseudomonas, fechamento por Azospirillum e o rotulo do estagio
+  // JA estao no painel contextual, item por item, com o mesmo nome e a mesma
+  // leitura. Desenhar tudo de novo sobre a raiz nao acrescentava informacao:
+  // acrescentava um segundo lugar para olhar, em cima do proprio organismo que
+  // o jogador precisa enxergar.
+  //
+  // O que fica no mundo e a bacteria, o bloqueio vascular e o movimento no
+  // xilema — o que so existe ali. Os numeros continuam a um Tab de distancia.
   function drawStatus(ctx, focus) {
+    if (!state.level?.traversalDebugVisible) return;
     if (focus.neutralized && focus.age > 10) return;
     if (focus.activationState === 'pending') return;
     const root = focus.root;

@@ -360,6 +360,40 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
     ));
   }
 
+  // Quanto a origem pode ficar FORA do trecho visível.
+  //
+  // Ela precisa nascer fora — o patógeno vem de algum lugar, e brotar no meio
+  // do campo de visão seria o defeito do marcador com outro desenho. Mas se
+  // ficar longe demais o grupo passa quase todo o percurso invisível e só
+  // aparece colado na raiz, que é o mesmo defeito pelo outro lado.
+  //
+  // Isto ficou crítico com as rotas verticais: com o jogador no alto de uma
+  // silhueta de 800px, uma origem no solo profundo cai uma tela inteira abaixo
+  // da câmera e nunca é vista.
+  const ORIGIN_MAXIMUM_OFFSCREEN = 260;
+
+  /**
+   * Traz a origem para a borda da câmera sem deixá-la entrar.
+   *
+   * O tipo continua valendo — esquerda continua nascendo à esquerda e fora — só
+   * a distância é que passa a ser medida em relação ao que está na tela, e não
+   * em relação ao mundo inteiro.
+   */
+  function constrainOriginToView(origin, targetY) {
+    const view = viewportBounds();
+    const out = ORIGIN_MAXIMUM_OFFSCREEN;
+    let { originX, originY } = origin;
+    originX = clamp(originX, view.left - out, view.right + out);
+    originY = clamp(originY, view.top - out, view.bottom + out);
+    // Invariantes do tipo, reaplicadas depois do corte.
+    if (origin.originType === 'left') originX = Math.min(originX, view.left - 60);
+    if (origin.originType === 'right') originX = Math.max(originX, view.right + 60);
+    // "De baixo" tem de continuar sendo de baixo, mesmo quando a raiz-alvo está
+    // no alto de uma rota vertical e o fundo do mundo ficou fora da câmera.
+    if (origin.originType === 'below') originY = Math.max(originY, targetY + 90);
+    return { ...origin, originX, originY };
+  }
+
   function selectOrigin(pathogen, targetRoot) {
     const random = createRandom(
       `${seedValue()}:arrival-origin:${pathogen}:n${totalArrivals}:a${attemptId()}`,
@@ -369,11 +403,15 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
     const targetX = targetRoot ? targetRoot.x + targetRoot.w / 2 : view.left + 200;
     const targetY = targetRoot ? targetRoot.y : view.bottom - 100;
 
-    // A necrótica só entra se existir E estiver perto do trecho jogável: um
-    // foco a seis telas de distância não é uma origem, é um número.
-    const necrotic = necroticRoots().filter(root => (
-      Math.abs(root.x + root.w / 2 - targetX) < 2200
-    ));
+    // A necrótica só entra se existir E estiver dentro do trecho visível, ou
+    // logo ao lado dele: um foco a seis telas de distância não é uma origem, é
+    // um número. Diferente das outras, esta é um lugar REAL — puxá-la para
+    // perto seria mentir sobre onde o tecido morto está, então ela é descartada
+    // em vez de deslocada.
+    const necrotic = necroticRoots().filter(root => {
+      const center = root.x + root.w / 2;
+      return center > view.left - 400 && center < view.right + 400;
+    });
     const pool = necrotic.length ? ORIGIN_TYPES : ORIGIN_TYPES.filter(type => type !== 'necrotic');
     const type = pool[Math.floor(random() * pool.length) % pool.length];
 
@@ -392,18 +430,18 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
         Number.isFinite(floor) ? floor - 30 : view.bottom + 120,
         view.bottom + margin,
       );
-      return {
+      return constrainOriginToView({
         originType: 'below',
         originX: targetX + (random() - 0.5) * 260,
         originY: Math.max(targetY + 90, belowY),
-      };
+      }, targetY);
     }
     const fromLeft = type === 'left';
-    return {
+    return constrainOriginToView({
       originType: fromLeft ? 'left' : 'right',
       originX: fromLeft ? view.left - margin : view.right + margin,
       originY: targetY + 30 + random() * 60,
-    };
+    }, targetY);
   }
 
   // --- PONTUAÇÃO POR PATÓGENO ----------------------------------------------
@@ -631,6 +669,10 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
             originY: origin.originY,
             preferredRoot: root,
             source,
+            // A duração vem do PERCURSO, não da velocidade de busca do J2. Sem
+            // isto o grupo nascia a uma tela de distância e levava meia fase
+            // nadando a 47 px/s — a chegada existia nos dados e não na tela.
+            travelSeconds: config.warningSeconds,
           })
         : null;
       warning.organisms = result?.juveniles ? [...result.juveniles] : [];
