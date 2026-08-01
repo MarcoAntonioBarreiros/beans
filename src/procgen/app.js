@@ -55,6 +55,7 @@ import { getPrimaryTraversalPlatforms } from './traversal-route.js';
 import {
   ROUTE_GATE_KINDS,
   ROUTE_GATE_REQUIRED_ABILITY,
+  ROUTE_GATE_REQUIRED_ORGANISM,
 } from './phase-vertical-plan.js';
 import { synchronizeWorldBounds } from './world-bounds.js';
 import { createRhizoctoniaControl } from './rhizoctonia-control.js';
@@ -784,6 +785,26 @@ function phosphateChargerPlatform(level, gate) {
     : null;
 }
 
+// Tipos de portao que a fase pode ABRIR de verdade. Dois filtros, nao um:
+//
+//   1. a habilidade tem de estar liberada na campanha;
+//   2. o ORGANISMO tem de estar presente. No Phase Lab ele pode ser desmarcado
+//      na caixa de selecao, e um portao sem o organismo que o abre e softlock.
+//
+// O segundo filtro faltava, e por isso o desafio aparecia mesmo com o Azo ou a
+// micorriza desligados: minha regra sobrescrevia a do laboratorio, que e quem
+// manda quando o laboratorio esta ligado.
+function availableRouteGateKinds() {
+  // Mesma convencao de `getRoamingDebutsAt`: uma LISTA restringe, mesmo vazia
+  // (nenhum organismo, nenhum portao); a AUSENCIA de lista nao restringe nada.
+  const selection = phaseLab.enabled ? phaseLab.config?.allowedOrganisms : null;
+  const allowed = Array.isArray(selection) ? new Set(selection) : null;
+  return ROUTE_GATE_KINDS.filter(kind => {
+    if (!campaign.unlocks?.[ROUTE_GATE_REQUIRED_ABILITY[kind]]) return false;
+    return !allowed || allowed.has(ROUTE_GATE_REQUIRED_ORGANISM[kind]);
+  });
+}
+
 function prepareLevel() {
   profile = prepareCampaignGeneration(campaign);
   seed = campaignPhaseSeed(campaign);
@@ -797,11 +818,7 @@ function prepareLevel() {
     // abre. Sem isso o portão é softlock, não desafio — e é por isso que a
     // lista é montada a partir dos unlocks em vez de ser fixa.
     verticalPlan: phaseTopologyMode && campaign.phase === 10
-      ? {
-          gateKinds: ROUTE_GATE_KINDS.filter(kind => (
-            campaign.unlocks?.[ROUTE_GATE_REQUIRED_ABILITY[kind]]
-          )),
-        }
+      ? { gateKinds: availableRouteGateKinds() }
       : false,
   });
   levelData.optionalDetourPlaytestMode = optionalDetourPlaytestMode;

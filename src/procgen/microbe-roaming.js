@@ -400,7 +400,11 @@ export function createRoamingMicrobeEcology({ state, entities }) {
       agent.angle = Math.atan2(agent.vy, agent.vx);
       agent.x += fx * dt * dt * .22;
       agent.y += fy * dt * dt * .22;
-      agent.y = clamp(agent.y, 48, H - 48);
+      // O mesmo clamp por quadro do modulo de ecologia, e pelo mesmo motivo:
+      // ele tambem prendia a ESCOLTA recrutada, que por isso aparecia abaixo
+      // de Miguelito mesmo com o alvo ja corrigido em beneficial-inoculants.
+      const frameBounds = organismVerticalBounds(state.level, { topMargin: 48, bottomMargin: 48 });
+      agent.y = clamp(agent.y, frameBounds.minY, frameBounds.maxY);
       agent.homeX += field.x * tuning.wander * 7;
       agent.homeY += field.y * tuning.wander * 5;
     }

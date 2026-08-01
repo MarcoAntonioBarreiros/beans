@@ -651,8 +651,11 @@ export function createMicrobeEcology({ state, entities }) {
       fx += avoid.x;
       fy += avoid.y;
 
-      if (agent.y < 70) fy += (70 - agent.y) * 4;
-      if (agent.y > H - 72) fy -= (agent.y - (H - 72)) * 5;
+      // Forca de contencao vertical. O teto sai da geometria; o piso continua
+      // fixo porque embaixo estao os hazards.
+      const frameBounds = organismVerticalBounds(state.level, { topMargin: 70, bottomMargin: 72 });
+      if (agent.y < frameBounds.minY) fy += (frameBounds.minY - agent.y) * 4;
+      if (agent.y > frameBounds.maxY) fy -= (agent.y - frameBounds.maxY) * 5;
 
       agent.targetVX = fx;
       agent.targetVY = fy;
@@ -677,7 +680,11 @@ export function createMicrobeEcology({ state, entities }) {
 
       const worldMax = state.level.endX || 5200;
       agent.x = clamp(agent.x, 28, worldMax - 28);
-      agent.y = clamp(agent.y, 45, H - 45);
+      // ESTE era o clamp que segurava tudo. Consertar so a posicao de
+      // NASCIMENTO nao adiantou nada: o agente subia num quadro e este limite
+      // o puxava de volta no seguinte.
+      const hardBounds = organismVerticalBounds(state.level, { topMargin: 45, bottomMargin: 45 });
+      agent.y = clamp(agent.y, hardBounds.minY, hardBounds.maxY);
 
       if (addTrail && profile.trail && distanceFromCamera < W) {
         agent.trail.push({ x: agent.x, y: agent.y, life: 1 });
@@ -687,7 +694,8 @@ export function createMicrobeEcology({ state, entities }) {
       while (agent.trail.length && agent.trail[0].life <= 0) agent.trail.shift();
 
       if (zone && state.discoveredMicrobes.has(zone.id)) {
-        agent.homeY = lerp(agent.homeY, clamp(zone.y - 18, 90, H - 90), dt * .08);
+        const homeBounds = organismVerticalBounds(state.level, { topMargin: 90, bottomMargin: 90 });
+        agent.homeY = lerp(agent.homeY, clamp(zone.y - 18, homeBounds.minY, homeBounds.maxY), dt * .08);
       }
     }
   }

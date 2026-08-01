@@ -84,7 +84,12 @@ export function createDefaultPhaseLabConfig(phase = 1) {
       // O laborat??rio abre cada fase focado em sua mec??nica nova. A raiz de
       // FBN continua dispon??vel manualmente nas fases posteriores, mas n??o
       // antecede por padr??o o ensaio da escada de Azospirillum na Fase 3.
-      enabled: base.phase === 2
+      // A Fase 2 estreia a FBN, e o laboratorio abre cada fase focado na sua
+      // mecanica nova. Mas a Fase 10 e o endgame: ali TODOS os desafios tem de
+      // estar funcionais por padrao, senao o ensaio da fase final testa uma
+      // fase que nao existe. Foi por isso que a raiz nitrogenada nao aparecia
+      // no playtest — nao estava faltando geometria, estava desligada.
+      enabled: (base.phase === 2 || base.phase >= 10)
         && (base.nitrogenRoot?.enabled ?? NITROGEN_ROOT_DEFAULTS.enabled),
     },
     azospirillumRootLadder: {

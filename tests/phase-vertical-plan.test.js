@@ -18,6 +18,8 @@ import { generateCampaignEncounters } from '../src/procgen/campaign-encounters.j
 import { createPhosphateDepositAt } from '../src/procgen/phosphate-solubilization.js';
 import { generateUnderdevelopedNitrogenRoots } from '../src/procgen/nitrogen-root.js';
 import { getPhaseManifest } from '../src/procgen/campaign-manifest.js';
+import { createMicrobeEcology } from '../src/procgen/microbe-ecology.js';
+import { synchronizeWorldBounds } from '../src/procgen/world-bounds.js';
 import {
   ASCENT_GATE_MINIMUM_CHUNK,
   AZO_ASCENT_RISE_RANGE,
@@ -681,6 +683,64 @@ test('portão - a FBN nunca rouba a plataforma de outro portão', () => {
   assert.ok(checkedSeeds >= 8, `só ${checkedSeeds} seeds conferidas`);
   // E a FBN continua existindo: o objetivo é conviver, não excluir.
   assert.ok(nitrogenGates >= 6, `FBN quase sumiu: ${nitrogenGates} portões`);
+});
+
+
+test('organismo - acompanha a rota quando ela sobe, medido no loop de update', () => {
+  // A primeira tentativa deste conserto tocou só as posições de NASCIMENTO e
+  // não mudou nada em jogo: os clamps que seguram o organismo são os do loop,
+  // um por quadro (`agent.y = clamp(agent.y, 45, H - 45)`). Este teste passa
+  // pelo update de verdade justamente por isso — verificar o helper isolado foi
+  // o que me deixou declarar consertado o que continuava quebrado.
+  const run = topY => {
+    const level = {
+      platforms: [
+        { x: 50, y: 500, w: 240, h: 100, type: 'root', logicIndex: -1 },
+        { x: 600, y: topY, w: 200, h: 54, type: 'root', logicIndex: 5 },
+      ],
+      endX: 3000, exudates: [], crystals: [], roots: [], hazards: [],
+    };
+    synchronizeWorldBounds(level, 720);
+    const state = {
+      level, cameraX: 400, time: 0,
+      player: { x: 700, y: topY - 48, w: 30, h: 48, facing: 1 },
+      discoveredMicrobes: new Set(['rhizobium']),
+    };
+    const ecology = createMicrobeEcology({
+      state,
+      entities: { discoverMicrobe() {}, burst() {} },
+    });
+    ecology.reset([
+      { id: 'rhizobium', x: 700, y: topY - 60, r: 155, territory: 620, logicIndex: 5 },
+    ]);
+    for (const agent of ecology.agents) {
+      agent.y = topY - 60;
+      agent.homeY = topY - 60;
+      agent.vy = 0;
+    }
+    for (let frame = 0; frame < 180; frame++) {
+      state.time += 1 / 60;
+      ecology.update(1 / 60);
+    }
+    return ecology.agents.map(agent => agent.y);
+  };
+
+  const tall = run(-160);
+  assert.ok(tall.length >= 3, `só ${tall.length} agentes no mundo alto`);
+  // O teto absoluto antigo era 45. Num mundo cuja geometria começa em -160, o
+  // organismo tem de ficar lá em cima com ela.
+  assert.ok(
+    Math.max(...tall) < 45,
+    `organismos puxados de volta para ${Math.round(Math.max(...tall))} (teto antigo 45)`,
+  );
+
+  // E o mundo plano não muda: a abertura é só para cima.
+  const flat = run(300);
+  assert.ok(flat.length >= 3);
+  assert.ok(
+    Math.min(...flat) >= 45,
+    `mundo plano vazou para ${Math.round(Math.min(...flat))}`,
+  );
 });
 
 test('silhueta - o fallback é declarado, nunca silencioso', () => {

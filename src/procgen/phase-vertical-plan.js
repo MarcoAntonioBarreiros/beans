@@ -296,6 +296,16 @@ export const ROUTE_GATE_REQUIRED_ABILITY = Object.freeze({
   phosphateWall: 'phosphateSolubilization',
 });
 
+// A habilidade nao basta: quem ABRE o portao e o ORGANISMO, e o Phase Lab pode
+// desliga-lo na caixa de selecao. Sem esta tabela o portao aparecia mesmo com
+// o organismo desmarcado — um softlock, e uma regra minha sobrescrevendo a do
+// laboratorio.
+export const ROUTE_GATE_REQUIRED_ORGANISM = Object.freeze({
+  azospirillumAscent: 'azospirillum',
+  mycorrhizaBridge: 'myco',
+  phosphateWall: 'bacillus',
+});
+
 /**
  * Chunks em que a subida deixa de ser saltável e passa a exigir escada.
  *
