@@ -68,6 +68,7 @@ import {
   createPathogenArrival,
   PATHOGEN_ARRIVAL_DEFAULTS,
 } from './pathogen-arrival.js';
+import { createPhaseFinale, PHASE_FINALE_SECONDS } from './phase-finale.js';
 import {
   advanceCampaignPhase,
   campaignPhaseSeed,
@@ -686,6 +687,17 @@ if (phaseLab.enabled) phaseLab.configureCampaign(campaign);
 sim.state.campaign = campaign;
 const cameraView = createCameraView({ canvas, state: sim.state });
 window.miguelitoViewport = responsiveCanvas;
+// A revelacao do feijoeiro tem mundo e camera PROPRIOS — nao compartilha
+// `cameraView`. So precisa saber o tamanho da superficie de desenho, que aqui e
+// o proprio canvas (o `responsive-canvas` ja escreve largura/altura logicas
+// nele, sem fator de DPI).
+const phaseFinale = createPhaseFinale({
+  getViewport: () => ({ width: canvas.width, height: canvas.height }),
+});
+// Os leitores de estado da fase (estoque, alertas, objetivos, painel de
+// contexto) sao HTML por cima do canvas: ficariam flutuando sobre o ceu. Somem
+// enquanto a cena roda e voltam sozinhos na fase seguinte.
+let hudHiddenByFinale = false;
 const rhizoctoniaControl = createRhizoctoniaControl({
   state: sim.state,
   entities: sim.entities,
@@ -1233,6 +1245,7 @@ function initGame({ announce = false } = {}) {
   trichodermaMeloidogyneControl.reset();
   ralstoniaControl.reset();
   pathogenArrival.reset();
+  phaseFinale.reset();
   sim.state.campaign = campaign;
   // Nao reinicia audio: `setPhase` compara a faixa mapeada com a que ja toca e
   // so faz crossfade quando muda. Reset da campanha nao recria contexto nem
@@ -1430,6 +1443,19 @@ function maybeAdvanceCampaign() {
   if (!campaign.transitionCaptured) {
     const report = buildPhaseReport();
     recordPhaseResult(campaign, report);
+    // A fase inteira acontece embaixo da terra. Aqui — e so aqui, com os
+    // objetivos ja validados pelo guard do `goal-system` — a camera sobe e
+    // mostra o feijoeiro que a raiz sustentava. O estado da planta sai de
+    // `report.score`, entao ela E o boletim, nao um enfeite por cima dele.
+    //
+    // Isto ocupa a espera que ja existia: `beginPhaseVictory` segura a troca de
+    // fase ate o stinger de 10,24 s terminar, e ate hoje eram 10 s de tela
+    // parada. A animacao dura ~4,3 s e nao interfere na contagem: se ela falhar,
+    // a fase avanca exatamente como antes.
+    phaseFinale.begin(report);
+    // Teto duro da espera pela cena: se o quadro parar de chamar `update` por
+    // qualquer motivo, a fase avanca assim mesmo. Nunca prende a campanha.
+    campaign.finaleDeadline = sim.state.time + PHASE_FINALE_SECONDS + 1.5;
     // Uma vez por fase, no ponto exato da captura. `beginPhaseVictory` faz mais
     // que tocar o stinger: suprime a musica da fase, abaixa o ambiente e para as
     // gotas — antes a musica continuava audivel por baixo da vitoria.
@@ -1451,6 +1477,14 @@ function maybeAdvanceCampaign() {
     sim.state.toast = `Fase ${report.phase}: ${report.score} pontos · saúde ${report.rootHealth}% · infestação ${report.infestation}%${vascular}`;
     sim.state.toastTime = PHASE_VICTORY_TOAST_SECONDS;
   }
+
+  // A revelacao do feijoeiro faz parte do fim da fase, entao a troca espera ela
+  // fechar. Com audio isso nao muda nada — o stinger de 10,24 s ja e bem mais
+  // longo que os 4,3 s da cena. Sem audio, a espera curta de 3,4 s
+  // (`PHASE_VICTORY_TRANSITION_SECONDS`) cortaria o afastamento no meio.
+  if (phaseFinale.active
+    && phaseFinale.mode !== 'done'
+    && sim.state.time < (campaign.finaleDeadline || 0)) return false;
 
   // Com audio: espera o stinger terminar (ou o prazo de seguranca).
   if (campaign.waitingForVictoryAudio) {
@@ -1689,6 +1723,16 @@ function loop(now) {
     if (advanced) tutorialManager?.updateAutomaticPresentation?.(dt);
     if (advanced) maybeAnnounceTraversalEncounter();
     renderWorld();
+    // Fora do `advance`: a revelacao roda pelo relogio real do quadro e nao
+    // depende de o quadro de jogo ter avancado (um cartao de tutorial aberto
+    // congela o mundo, nao a animacao). `render` devolve `false` enquanto o
+    // modulo esta ocioso — no jogo normal nao desenha nada.
+    phaseFinale.update(dt);
+    const finaleVisible = phaseFinale.render(ctx);
+    if (finaleVisible !== hudHiddenByFinale) {
+      hudHiddenByFinale = finaleVisible;
+      document.body.classList.toggle('phase-finale', finaleVisible);
+    }
     updateTouchAbilityVisibility();
 
     // O objetivo da fase agora e dito pelo cartao de abertura. Manter a mesma

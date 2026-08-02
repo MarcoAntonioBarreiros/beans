@@ -724,6 +724,20 @@
     @media (max-width: 600px) {
       #hud-context { top: auto; bottom: calc(80px + var(--safe-bottom)); }
     }
+    /* FIM DE FASE — a camera sobe e mostra o feijoeiro. Os leitores de estado da
+       fase sao HTML por cima do canvas e ficariam flutuando sobre o ceu; somem
+       enquanto a cena roda. `#mission`, `#toast` e os controles continuam: o
+       primeiro anuncia a proxima fase e os outros nao podem sumir no fim da
+       campanha, quando a tela final permanece. */
+    body.phase-finale #hud-stock,
+    body.phase-finale #hud-context,
+    body.phase-finale #hud-alerts,
+    body.phase-finale #objective-list,
+    body.phase-finale #debug {
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.5s ease;
+    }
   </style>
 </head>
 <body>
