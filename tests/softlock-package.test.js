@@ -814,3 +814,80 @@ test('52. a FBN da campanha nunca escolhe alvo com função incompatível', () =
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// REGRESSÃO: PORTÃO DE FOSFATO SEM RAIZ TRANSPORTADORA
+// ---------------------------------------------------------------------------
+//
+// Softlock real, reportado no playtest e reproduzido em duas de quarenta seeds:
+// o hospedeiro do portão de parede nasce SOLO, e as únicas raízes dentro do
+// alcance da micorriza são de RECUPERAÇÃO — que a micorriza não coloniza e que
+// somem em runtime. O jogador solubiliza a parede e o fósforo fica na poça para
+// sempre.
+//
+// Registrar `transportBlockedReason` não bastava: era diagnóstico, não conserto.
+
+test('53. um depósito sobre solo, sem raiz ao alcance, promove uma plataforma', () => {
+  const host = { id: 'h', logicIndex: 4, x: 600, y: 500, w: 240, h: 54, type: 'soil' };
+  const longe = { id: 'r', logicIndex: 9, x: 4000, y: 500, w: 240, h: 54, type: 'root' };
+  // Recuperação perto: parece raiz, não serve — e era o que mascarava o caso.
+  const rede = {
+    id: 'rec', logicIndex: 5, x: 900, y: 520, w: 200, h: 54, type: 'root', recovery: true,
+  };
+  const level = {
+    platforms: [host, rede, longe], crystals: [], phosphateDeposits: [],
+    availablePhosphatePools: [], phosphateTransportParticles: [],
+  };
+  const deposit = createPhosphateDepositAt({
+    level, hostPlatform: host, logicIndex: 4, authored: true, id: 'parede',
+  });
+  assert.ok(deposit.transportRoot, 'o depósito continuou sem raiz transportadora');
+  assert.equal(deposit.transportBlockedReason, null);
+  // O hospedeiro é o candidato natural: está debaixo do depósito.
+  assert.equal(host.type, 'root', 'o hospedeiro não foi promovido');
+  assert.equal(host.promotedForPhosphateTransport, true);
+  // E a rede de segurança continua fora: promover não relaxou o critério.
+  assert.equal(isColonizableTransportRoot(rede), false);
+});
+
+test('54. havendo raiz colonizável ao alcance, nada é promovido', () => {
+  const host = { id: 'h', logicIndex: 4, x: 600, y: 500, w: 240, h: 54, type: 'soil' };
+  const raiz = { id: 'r', logicIndex: 3, x: 500, y: 500, w: 240, h: 54, type: 'root' };
+  const level = {
+    platforms: [host, raiz], crystals: [], phosphateDeposits: [],
+    availablePhosphatePools: [], phosphateTransportParticles: [],
+  };
+  const deposit = createPhosphateDepositAt({ level, hostPlatform: host, logicIndex: 4 });
+  assert.equal(deposit.transportRoot, raiz);
+  assert.equal(host.type, 'soil', 'promoveu sem necessidade');
+});
+
+test('55. todo portão de fosfato da campanha tem raiz transportadora', () => {
+  // Foi esta varredura que faltou no pacote anterior: a auditoria montava a
+  // campanha SEM criar os depósitos dos portões, relatava "0 depósitos, 0 sem
+  // raiz", e eu li o zero como aprovação em vez de como ausência de medida.
+  let gates = 0;
+  let promoted = 0;
+  for (let index = 1; index <= 40; index++) {
+    const seed = `parede-${index}`;
+    const level = generateLevel(seed, {
+      verticalPlan: { gateKinds: ['azospirillumAscent', 'mycorrhizaBridge', 'phosphateWall', 'nitrogenRootGate'] },
+    });
+    for (const gate of (level.routeGates || []).filter(entry => entry.kind === 'phosphateWall')) {
+      const deposit = createPhosphateDepositAt({
+        level, hostPlatform: gate.host, logicIndex: gate.chunkIndex,
+        authored: true, id: `${gate.id}-deposit`,
+      });
+      if (!deposit) continue;
+      gates++;
+      assert.ok(
+        findTransportRootFor(level, deposit),
+        `${seed}: portão de fosfato em c${gate.chunkIndex} sem raiz colonizável ao alcance`,
+      );
+    }
+    promoted += level.platforms.filter(entry => entry.promotedForPhosphateTransport).length;
+  }
+  assert.ok(gates > 0, 'nenhum portão de fosfato foi gerado — a varredura mediria o vazio');
+  // A promoção é o último recurso: a maioria das seeds não precisa dela.
+  assert.ok(promoted < gates, `promoveu em ${promoted} de ${gates} — virou regra, não exceção`);
+});

@@ -108,10 +108,81 @@ export function findTransportRootFor(level, deposit, settings = null) {
   return { root: best.root, distance: best.distance, reach };
 }
 
-/** Grava no depósito com quem ele conta para transportar. Sem raiz ao alcance,
- *  grava o motivo — um depósito sem saída tem de ser visível como tal. */
-export function attachTransportRoot(level, deposit, settings = null) {
-  const found = findTransportRootFor(level, deposit, settings);
+/** Esta plataforma pode ser PROMOVIDA a raiz? O tipo é visual e de colonização;
+ *  promover solo é gratuito e é exatamente o assunto da fase do fósforo. */
+function promotableToTransportRoot(platform) {
+  return Boolean(
+    platform
+    && platform.type === 'soil'
+    && !platform.recovery
+    && !platform.final
+    && !platform.mycorrhizaStructure
+    && !platform.azospirillumStructure
+    && !platform.nitrogenRootStructure
+    && !platform.ladderStep
+    && !platform.bridgeSpan,
+  );
+}
+
+/**
+ * GARANTE uma raiz transportadora, promovendo solo quando não houver nenhuma.
+ *
+ * Registrar o bloqueio não era suficiente — era diagnóstico, não conserto. O
+ * caso real medido na campanha: o hospedeiro do portão de parede nasce SOLO, e
+ * as únicas raízes ao alcance são de RECUPERAÇÃO, que a micorriza não coloniza e
+ * que somem em runtime. O jogador solubiliza a parede e o fósforo fica na poça
+ * para sempre: solubilizou, e não tem para onde levar.
+ *
+ * A escalada segue a ordem do menos para o mais invasivo:
+ *
+ *   1. já existe raiz colonizável ao alcance — nada a fazer;
+ *   2. promove o PRÓPRIO hospedeiro do depósito, se for solo promovível. É o
+ *      candidato natural: está debaixo do depósito, e um depósito mineral
+ *      encostado numa raiz é a imagem que a fase quer;
+ *   3. promove a plataforma de solo promovível mais próxima dentro do alcance;
+ *   4. nada disso existe — o bloqueio fica registrado, visível no diagnóstico.
+ *
+ * Determinístico: escolhe sempre a mais próxima, sem sorteio e sem consumir RNG.
+ */
+export function ensureTransportRoot(level, deposit, hostPlatform = null, settings = null) {
+  const existing = findTransportRootFor(level, deposit, settings);
+  if (existing) return existing;
+
+  const config = { ...PHOSPHATE_SOLUBILIZATION_DEFAULTS, ...(settings || {}) };
+  const reach = Number(config.mycorrhizalReach) || 320;
+  const centerX = deposit.x + deposit.w / 2;
+  const centerY = deposit.y + deposit.h / 2;
+
+  const promote = platform => {
+    platform.type = 'root';
+    platform.promotedForPhosphateTransport = true;
+    return findTransportRootFor(level, deposit, settings);
+  };
+
+  if (promotableToTransportRoot(hostPlatform)) {
+    const promoted = promote(hostPlatform);
+    if (promoted) return promoted;
+  }
+
+  let nearest = null;
+  for (const platform of level?.platforms || []) {
+    if (!promotableToTransportRoot(platform)) continue;
+    const distance = Math.hypot((platform.x + platform.w / 2) - centerX, platform.y - centerY);
+    if (distance > reach) continue;
+    if (!nearest || distance < nearest.distance) nearest = { platform, distance };
+  }
+  if (nearest) {
+    const promoted = promote(nearest.platform);
+    if (promoted) return promoted;
+  }
+  return null;
+}
+
+/** Grava no depósito com quem ele conta para transportar, promovendo solo a raiz
+ *  se for preciso. Sem solução possível, grava o motivo — um depósito sem saída
+ *  tem de ser visível como tal, e não passar por funcional. */
+export function attachTransportRoot(level, deposit, settings = null, hostPlatform = null) {
+  const found = ensureTransportRoot(level, deposit, hostPlatform, settings);
   const config = { ...PHOSPHATE_SOLUBILIZATION_DEFAULTS, ...(settings || {}) };
   deposit.transportReach = Number(config.mycorrhizalReach) || 320;
   if (!found) {
@@ -190,7 +261,7 @@ export function createPhosphateDepositAt({
   level.phosphateTransportParticles ||= [];
   // Com quem este depósito conta para transportar. Registrado na criação, junto
   // da geometria que o determina.
-  attachTransportRoot(level, deposit, settings);
+  attachTransportRoot(level, deposit, settings, hostPlatform);
   return deposit;
 }
 

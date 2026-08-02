@@ -57,7 +57,11 @@ import {
   buildPhaseLabManifest,
   createDefaultPhaseLabConfig,
 } from '../src/procgen/phase-lab-config.js';
-import { findTransportRootFor } from '../src/procgen/phosphate-solubilization.js';
+import {
+  createPhosphateDepositAt,
+  finalizePhosphateStockCapacity,
+  findTransportRootFor,
+} from '../src/procgen/phosphate-solubilization.js';
 import { auditPlatformOccupancy } from '../src/procgen/platform-occupancy.js';
 import { evaluateMycorrhizaBridgeCandidate } from '../src/procgen/mycorrhiza-bridge-feasibility.js';
 import { evaluatePropulsionCrossing } from '../src/procgen/propulsion-feasibility.js';
@@ -132,11 +136,30 @@ function buildPhase(phase, seed, { unlocks, verticalPlan = null } = {}) {
       level: target, phase, seedValue: seed, encounters, config: null,
     }),
   });
+  // OS DEPOSITOS DE FOSFATO DA CAMPANHA.
+  //
+  // Faltavam aqui, e a ausencia foi cara: a auditoria relatava
+  // "depositos: reais 0 | sem raiz 0" para a campanha, e eu li aquele zero como
+  // "nenhum quebrado" quando ele queria dizer "nenhum medido". Um portao de
+  // parede sem raiz colonizavel ao alcance passou despercebido por isso.
+  //
+  // Zero so significa alguma coisa quando o denominador e maior que zero.
+  for (const gate of (level.routeGates || []).filter(entry => entry.kind === 'phosphateWall')) {
+    createPhosphateDepositAt({
+      level,
+      hostPlatform: gate.host,
+      logicIndex: gate.chunkIndex,
+      authored: true,
+      difficulty: 'phase-route-gate',
+      id: `${gate.id}-deposit`,
+    });
+  }
   generateUnderdevelopedNitrogenRoots({
     level, phase, seedValue: seed, encounters,
     config: manifest?.nitrogenRoot,
   });
   synchronizeWorldBounds(level);
+  finalizePhosphateStockCapacity(level);
   return { level, integrity, encounters };
 }
 
