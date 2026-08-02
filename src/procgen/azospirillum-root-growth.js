@@ -4,6 +4,7 @@ import { ensurePhaseObjectiveProgress } from './campaign-objective-progress.js';
 import { createRandom } from './random.js';
 import { getPrimaryTraversalPlatforms } from './traversal-route.js';
 import { getNitrogenAvailability } from './nitrogen-availability.js';
+import { synchronizeWorldBounds } from './world-bounds.js';
 import { fxLanded } from '../game-audio.js';
 
 export const AZOSPIRILLUM_ROOT_LADDER_BLOCK_TYPE = 'azospirillum-root-ladder';
@@ -968,11 +969,29 @@ export function createAzospirillumRootGrowth({ state, entities, inoculants }) {
 
   // A escada e efeito da inoculacao, nao recurso do nivel: onde a colonia de
   // Azospirillum amadurece sobre uma raiz, a raiz lateral sai dali.
+  // ESCADA SEM DESTINO: o topo e RELATIVO A RAIZ, nao a uma linha do mundo.
+  //
+  // Era `Math.max(70, host.y - reach)`. O 70 nasceu quando o mundo tinha uma
+  // tela de altura e o topo da geometria ficava perto de y=0 — outro limite
+  // absoluto sobrevivendo a uma mudanca de escala, como o `[220, 560]` da
+  // senoide e o `[250, 555]` do fallback.
+  //
+  // Com a silhueta vertical a rota sobe a Y NEGATIVO. Numa raiz em y=-100 com
+  // alcance 300, `host.y - reach` da -400, o `Math.max` devolvia 70, e 70 esta
+  // 170px ABAIXO da raiz: a subida virava descida, `end.y >= start.y - 40`
+  // disparava e a funcao devolvia `null`. Nenhuma escada, e nenhum aviso.
+  //
+  // Era isto por tras de "a escada do Azo so forma no bloco do desafio": o
+  // hospedeiro obrigatorio da fase 3 esta numa altura antiga, e qualquer raiz
+  // da parte alta da rota nova caia neste ramo.
   function createRuntimeLadder(host, destination, reach) {
     const start = topPoint(host, host.x + host.w / 2);
     const end = destination
       ? topPoint(destination, start.x)
-      : { x: start.x, y: Math.max(70, host.y - reach) };
+      : { x: start.x, y: host.y - reach };
+    // Continua valendo para DESTINO declarado: destino que nao esta acima do
+    // hospedeiro nao e subida, e escada que desce nao existe. Sem destino,
+    // `host.y - reach` esta sempre acima, porque `reach >= RUNTIME_MIN_REACH`.
     if (end.y >= start.y - 40) return null;
 
     const id = `azo-ladder-runtime-${++runtimeLadderId}`;
@@ -1096,8 +1115,31 @@ export function createAzospirillumRootGrowth({ state, entities, inoculants }) {
 
       const reach = reachFromStock();
       const ladder = createRuntimeLadder(host, destinationFor(host, reach), reach);
-      if (ladder) state.level.azospirillumRootLadders.push(ladder);
+      if (ladder) {
+        state.level.azospirillumRootLadders.push(ladder);
+        expandBoundsForLadder(ladder);
+      }
     }
+  }
+
+  /**
+   * A escada nova pode passar do topo conhecido do mundo.
+   *
+   * `synchronizeWorldBounds` só rodava na construção da fase, e a escada é
+   * criada em RUNTIME, quando a colônia amadurece. Numa raiz alta o último
+   * degrau saía acima de `geometryTopY` e a câmera não subia junto: o jogador
+   * escalava para fora do enquadramento.
+   *
+   * `calculateWorldGeometryBounds` já percorre `azospirillumRootLadders` e os
+   * degraus, então basta re-sincronizar — nada de um segundo cálculo paralelo.
+   */
+  function expandBoundsForLadder(ladder) {
+    const topY = Math.min(
+      ladder.endY,
+      ...ladder.steps.map(step => step.y),
+    );
+    if (Number.isFinite(state.level.geometryTopY) && topY >= state.level.geometryTopY) return;
+    synchronizeWorldBounds(state.level, state.visibleWorldHeight);
   }
 
   // Prova de fato (Fase 8): so conta como travessia quando Miguelito USA a escada

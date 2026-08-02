@@ -58,6 +58,7 @@ import {
   ROUTE_GATE_REQUIRED_ORGANISM,
 } from './phase-vertical-plan.js';
 import { synchronizeWorldBounds } from './world-bounds.js';
+import { validateAndRepairAzospirillumGates } from './azospirillum-gate-integrity.js';
 import { createRhizoctoniaControl } from './rhizoctonia-control.js';
 import { createTrichodermaMeloidogyneControl } from './trichoderma-meloidogyne-control.js';
 import { createTrichodermaRhizoctoniaControl } from './trichoderma-rhizoctonia-control.js';
@@ -1031,6 +1032,29 @@ function prepareLevel() {
       optionalDetour.validation.primaryRouteGeometryHashAfter;
   }
   traceGeometry('generateAzospirillumRootLadders');
+  // UM PORTAO = UMA ESCADA VALIDA.
+  //
+  // O pedido autoral podia ser descartado em silencio (um `continue` seco
+  // quando o hospedeiro deixava de ser raiz ou o destino saia de cima), e a
+  // auditoria continuava chamando o par de travessia intencional porque os
+  // metadados batiam. Portao de pe, escada inexistente, atestado de saude.
+  //
+  // Aqui a invariante e verificada: repara o que da, e o que nao da vira
+  // travessia ordinaria validada pela fisica. Degradacao honesta e melhor que
+  // um degrau alto que ninguem sobe.
+  levelData.azospirillumGateIntegrity = validateAndRepairAzospirillumGates(levelData, {
+    abilities: campaign.unlocks || {},
+    regenerateLadders: level => generateAzospirillumRootLadders({
+      level,
+      phase: campaign.phase,
+      seedValue: seed,
+      encounters: level.microbeEncounters,
+      config: declaredAzospirillumLadder?.enabled === false
+        ? null
+        : declaredAzospirillumLadder || contextualAzospirillumLadder,
+    }),
+  });
+  traceGeometry('validateAndRepairAzospirillumGates');
   generateUnderdevelopedNitrogenRoots({
     level: levelData,
     phase: campaign.phase,

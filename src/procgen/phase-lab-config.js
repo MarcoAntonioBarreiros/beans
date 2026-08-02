@@ -16,6 +16,10 @@ import {
   validateCampaignManifest,
 } from './campaign-manifest.js';
 import { createRandom } from './random.js';
+import {
+  createPhosphateDepositAt,
+  findTransportRootFor,
+} from './phosphate-solubilization.js';
 import { PATHOGEN_PRESSURE_DEFAULTS } from './pathogen-pressure.js';
 import { PATHOGEN_ARRIVAL_DEFAULTS } from './pathogen-arrival.js';
 
@@ -25,7 +29,13 @@ import { PATHOGEN_ARRIVAL_DEFAULTS } from './pathogen-arrival.js';
 // config salvo: a Fase 10 passou a pedir tres portoes de FBN e o Lab continuava
 // com o `count: 1` gravado meses atras. Trocar a chave e o unico jeito honesto
 // de entregar o padrao novo sem sobrescrever escolha nenhuma em silencio.
-export const PHASE_LAB_STORAGE_KEY = 'miguelito:phase-lab:v5';
+// v6: um config v5 salvo para a Fase 10 carrega `allowedOrganisms: []` — a
+// lista vazia que abria a fase sem organismo nenhum. Como `readConfig` usa o
+// armazenado CRU, a correcao do padrao nunca chegaria a quem ja tem config
+// salvo: ele continuaria abrindo a fase 10 vazia e concluindo que o conserto
+// nao funcionou. Trocar a chave e o unico jeito de entregar o padrao novo sem
+// sobrescrever escolha nenhuma em silencio.
+export const PHASE_LAB_STORAGE_KEY = 'miguelito:phase-lab:v6';
 export const PHASE_LAB_MAX_RESOURCES = 100;
 
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -72,14 +82,28 @@ export function createDefaultPhaseLabConfig(phase = 1) {
     theme: base.theme,
     mission: base.mission,
     segments: clone(base.segments),
-    // O ensaio nasce somente com os organismos que participam da mec??nica
-    // nova da fase. Organismos j?? conhecidos continuam dispon??veis no
-    // seletor, mas n??o invadem o teste focado por padr??o.
+    // O ensaio nasce com os organismos que participam da MECANICA NOVA da
+    // fase: organismos ja conhecidos continuam no seletor, mas nao invadem o
+    // teste focado por padrao.
+    //
+    // Fase de INTEGRACAO nao tem mecanica nova — a fase 10 nao apresenta nada,
+    // ela combina o que veio antes. Nesse caso `phaseOrganisms` sai vazio, e o
+    // fallback antigo filtrava o pool curricular por `base.presentations`, que
+    // tambem esta vazio: o resultado era `[]`.
+    //
+    // E `[]` nao quer dizer "sem restricao", quer dizer "nada permitido".
+    // `getProceduralPoolAt` devolvia lista vazia e `getRoamingDebutsAt` filtrava
+    // todas as estreias — a fase 10 do Lab abria SEM NENHUM organismo. Sem
+    // Azospirillum nao ha escada, sem micorriza nao ha transporte de fosforo,
+    // sem Bacillus nao ha solubilizacao. Era isto por tras de metade do que
+    // parecia softlock de geracao.
+    //
+    // Sem apresentacoes, o padrao passa a ser o pool curricular ACUMULADO — o
+    // mesmo que a campanha usa, lido do manifesto, nao uma lista paralela que
+    // possa divergir dele.
     allowedOrganisms: phaseOrganisms.length
       ? phaseOrganisms
-      : getProceduralPoolAt(base.phase, 0).filter(type => (
-          base.presentations.some(presentation => presentation.roamingType === type)
-        )),
+      : getProceduralPoolAt(base.phase, 0),
     allowedPathogens: base.pathogenDebuts.map(entry => entry.pathogen)
       .filter(type => !MVP_EXCLUDED_PATHOGENS.includes(type)),
     resources: {
@@ -374,24 +398,87 @@ export function applyPhaseLabResources(level, phaseManifest, seedValue) {
     });
   }
   if (resources.crystals !== null) {
-    level.crystals = Array.from({ length: resources.crystals }, (_, index) => {
-      const platform = distributedPlatform(platforms.slice(1), index, resources.crystals, rnd) || platforms[0];
-      const width = 56;
-      const height = 110;
-      return {
-        logicIndex: platform?.logicIndex ?? -1,
-        requiredFeature: 'phosphateSolubilization',
-        phosphateDeposit: true,
-        remainingPhosphate: 1,
-        initialPhosphate: 1,
-        x: (platform?.x || 160) + Math.max(5, (platform?.w || 140) - width - 5),
-        y: (platform?.y || 500) - height,
-        w: width,
-        h: height,
-        hp: 1,
-        broken: false,
-      };
-    });
+    applyPhaseLabPhosphateDeposits(level, phaseManifest, resources.crystals, platforms, rnd);
   }
   return level;
+}
+
+/**
+ * DEPÓSITOS DE FÓSFORO DO PHASE LAB.
+ *
+ * O campo "Cristais" montava um objeto à mão e o colocava só em `level.crystals`
+ * com `phosphateDeposit: true`. O sistema de solubilização percorre
+ * `level.phosphateDeposits`, que continuava vazio — o bloco aparecia, colidia,
+ * parecia um depósito e não participava de nada. Nenhum pulso o atingia, nenhum
+ * pool nascia dele, e o diagnóstico do fósforo não sabia que ele existia.
+ *
+ * Agora passa pela MESMA fábrica da campanha, que empurra a mesma instância nas
+ * duas coleções. Nada de duas implementações paralelas para o mesmo objeto.
+ */
+function applyPhaseLabPhosphateDeposits(level, phaseManifest, count, platforms, rnd) {
+  const settings = phaseManifest?.phosphateSolubilization || null;
+  // Só os procedurais do Lab saem. Depósito autoral da fase é conteúdo
+  // obrigatório: apagá-lo junto tiraria o desafio que a fase precisa ter.
+  const isLabDeposit = deposit => deposit?.phaseLabGenerated === true;
+  level.crystals = (level.crystals || []).filter(entry => !isLabDeposit(entry));
+  level.phosphateDeposits = (level.phosphateDeposits || []).filter(entry => !isLabDeposit(entry));
+
+  const hosts = platforms.slice(1);
+  for (let index = 0; index < count; index++) {
+    // Preferência por hospedeiro que TENHA raiz colonizável ao alcance. Sem
+    // isso o depósito é solubilizável e o fósforo fica na poça para sempre.
+    const host = pickDepositHost(level, hosts, index, count, rnd, settings)
+      || distributedPlatform(hosts, index, count, rnd)
+      || platforms[0];
+    if (!host) break;
+    const deposit = createPhosphateDepositAt({
+      level,
+      hostPlatform: host,
+      logicIndex: host.logicIndex,
+      authored: false,
+      difficulty: 'standard',
+      id: `phase-lab:phosphate-deposit:${index}`,
+      settings,
+    });
+    if (deposit) deposit.phaseLabGenerated = true;
+  }
+}
+
+/**
+ * Escolhe hospedeiro para o depósito priorizando os que têm raiz transportadora.
+ *
+ * Tenta o sorteio normal primeiro — variedade importa. Se aquele ponto não tiver
+ * raiz ao alcance, procura na mesma região antes de desistir; só depois aceita
+ * qualquer um, e nesse caso o depósito nasce com `transportBlockedReason`
+ * preenchido, visível no diagnóstico em vez de silenciosamente inútil.
+ */
+function pickDepositHost(level, hosts, index, count, rnd, settings) {
+  if (!hosts.length) return null;
+  const reachable = candidate => {
+    const probe = probeDeposit(candidate, settings);
+    return Boolean(findTransportRootFor(level, probe, settings));
+  };
+  const first = distributedPlatform(hosts, index, count, rnd);
+  if (first && reachable(first)) return first;
+  // Mesma região: vizinhos imediatos do sorteado, sem sair do trecho.
+  const start = Math.max(0, hosts.indexOf(first));
+  for (let offset = 1; offset <= 6; offset++) {
+    for (const candidate of [hosts[start - offset], hosts[start + offset]]) {
+      if (candidate && reachable(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+/** Caixa do depósito que `createPhosphateDepositAt` produziria neste
+ *  hospedeiro. Serve para medir o alcance ANTES de criar de verdade. */
+function probeDeposit(hostPlatform, settings) {
+  const height = Math.max(190, Number(settings?.depositHeight) || 210);
+  return {
+    x: hostPlatform.x + hostPlatform.w - 64,
+    y: hostPlatform.y - height,
+    w: 58,
+    h: height,
+    logicIndex: hostPlatform.logicIndex,
+  };
 }

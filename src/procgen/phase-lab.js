@@ -689,6 +689,28 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
             + ` micorriza=${carrier?.transportingColony?.id || carrier?.depositId || '—'}`;
         })
         .join('\n') || '    (nenhuma raiz recebeu fosforo ainda)';
+      // Por DEPOSITO: quem transporta, a que distancia, e o motivo do bloqueio
+      // quando nao ha ninguem. Um deposito sem raiz ao alcance e solubilizavel e
+      // inutil — precisa ser visivel como tal, nao parecer funcional.
+      const mycoSeen = (level.microbeEncounters || []).some(entry => entry.id === 'myco');
+      const depositLines = deposits.map(deposit => {
+        const exudateBefore = (level.exudates || []).some(entry => (
+          Number.isInteger(entry.logicIndex) && entry.logicIndex <= (deposit.logicIndex ?? 0)
+        ));
+        const blocked = deposit.transportBlockedReason
+          || (!mycoSeen ? 'transporte indisponivel: micorriza nao permitida' : null)
+          || (!exudateBefore ? 'sem exsudato antes do deposito' : null);
+        return `    ${deposit.id}`
+          + ` restante=${round(deposit.remainingPhosphate)}`
+          + ` raiz=${deposit.transportRootLogicIndex === null || deposit.transportRootLogicIndex === undefined
+            ? '—' : `c${deposit.transportRootLogicIndex}`}`
+          + ` dist=${deposit.transportDistance === null || deposit.transportDistance === undefined
+            ? '—' : Math.round(deposit.transportDistance)}`
+          + `/${deposit.transportReach ?? '—'}`
+          + ` micorriza=${mycoSeen ? 'sim' : 'nao'}`
+          + ` exsudato=${exudateBefore ? 'sim' : 'nao'}`
+          + `${blocked ? `  [${blocked}]` : ''}`;
+      }).join('\n') || '    (nenhum deposito na fase)';
       const poolLines = pools
         .map(pool => (
           `    ${pool.depositId} amount=${round(pool.amount)} ${pool.absorptionState || '—'}`
@@ -704,6 +726,8 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
           + '   (minimumTransportedPhosphate da fase)',
         'pocas disponiveis      :',
         poolLines,
+        'depositos              :',
+        depositLines,
         'raizes com estoque     :',
         stocked,
       ].join('\n');

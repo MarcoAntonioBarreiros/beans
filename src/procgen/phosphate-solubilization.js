@@ -13,6 +13,85 @@ function routePlatforms(level) {
     .sort((a, b) => (a.logicIndex ?? 0) - (b.logicIndex ?? 0) || a.x - b.x);
 }
 
+/**
+ * A raiz pode receber uma colônia de micorriza que transporte fósforo?
+ *
+ * Os descartes não são estéticos. A raiz final encerra a fase; a de recuperação
+ * é rede de segurança e some; degrau de escada, ponte e demais estruturas são
+ * geometria temporária que o runtime cria e destrói — colonizar qualquer uma
+ * delas daria um vínculo que desaparece no meio do transporte.
+ */
+export function isColonizableTransportRoot(platform) {
+  return Boolean(
+    platform
+    && platform.type === 'root'
+    && !platform.final
+    && !platform.recovery
+    && !platform.mycorrhizaStructure
+    && !platform.azospirillumStructure
+    && !platform.nitrogenRootStructure
+    && !platform.ladderStep
+    && !platform.bridgeSpan
+    && !platform.removedByChallenge
+    && Number.isFinite(platform.x)
+    && platform.w > 0,
+  );
+}
+
+/**
+ * A raiz que vai TRANSPORTAR o fósforo deste depósito, se existir.
+ *
+ * O depósito mineral não precisa estar sobre uma raiz — ele é rocha, e fica no
+ * solo. Mas sem raiz colonizável dentro do alcance real da micorriza ele é
+ * decoração: dá para solubilizar e o fósforo fica na poça, sem nunca chegar a
+ * lugar nenhum. O alcance é lido da configuração (`mycorrhizalReach`), não
+ * repetido aqui.
+ *
+ * Preferência por raiz anterior ou lateralmente próxima na rota: o jogador
+ * chega ao depósito vindo de trás, e uma raiz que ele já passou é uma que ele
+ * pode voltar e inocular.
+ */
+export function findTransportRootFor(level, deposit, settings = null) {
+  const config = { ...PHOSPHATE_SOLUBILIZATION_DEFAULTS, ...(settings || {}) };
+  const reach = Number(config.mycorrhizalReach) || 320;
+  const centerX = deposit.x + deposit.w / 2;
+  const centerY = deposit.y + deposit.h / 2;
+  let best = null;
+  for (const platform of level?.platforms || []) {
+    if (!isColonizableTransportRoot(platform)) continue;
+    // A colônia fica no topo da raiz, que é de onde a distância é medida em
+    // `transportingColony`.
+    const colonyX = platform.x + platform.w / 2;
+    const distance = Math.hypot(colonyX - centerX, platform.y - centerY);
+    if (distance > reach) continue;
+    const behind = (platform.logicIndex ?? 0) <= (deposit.logicIndex ?? 0);
+    const score = distance - (behind ? 40 : 0);
+    if (!best || score < best.score) best = { root: platform, distance, score };
+  }
+  if (!best) return null;
+  return { root: best.root, distance: best.distance, reach };
+}
+
+/** Grava no depósito com quem ele conta para transportar. Sem raiz ao alcance,
+ *  grava o motivo — um depósito sem saída tem de ser visível como tal. */
+export function attachTransportRoot(level, deposit, settings = null) {
+  const found = findTransportRootFor(level, deposit, settings);
+  const config = { ...PHOSPHATE_SOLUBILIZATION_DEFAULTS, ...(settings || {}) };
+  deposit.transportReach = Number(config.mycorrhizalReach) || 320;
+  if (!found) {
+    deposit.transportRoot = null;
+    deposit.transportRootLogicIndex = null;
+    deposit.transportDistance = null;
+    deposit.transportBlockedReason = 'nenhuma raiz colonizavel ao alcance';
+    return null;
+  }
+  deposit.transportRoot = found.root;
+  deposit.transportRootLogicIndex = found.root.logicIndex ?? null;
+  deposit.transportDistance = found.distance;
+  deposit.transportBlockedReason = null;
+  return found;
+}
+
 export function createPhosphateDepositAt({
   level,
   hostPlatform,
@@ -61,10 +140,16 @@ export function createPhosphateDepositAt({
   };
   level.crystals ||= [];
   level.phosphateDeposits ||= [];
+  // A MESMA instância nas duas coleções. `crystals` é o que o mundo desenha e
+  // colide; `phosphateDeposits` é o que o sistema de solubilização percorre.
+  // Dois objetos parecidos dariam um bloco que aparece, colide e não reage.
   level.crystals.push(deposit);
   level.phosphateDeposits.push(deposit);
   level.availablePhosphatePools ||= [];
   level.phosphateTransportParticles ||= [];
+  // Com quem este depósito conta para transportar. Registrado na criação, junto
+  // da geometria que o determina.
+  attachTransportRoot(level, deposit, settings);
   return deposit;
 }
 

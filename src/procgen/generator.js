@@ -901,7 +901,7 @@ export function generateLevel(seedString, {
 // com uma unica primitiva de potencia maxima daria falso-negativo por overshoot
 // nos vaos pequenos (a combinacao salto duplo + dash passa longe de um degrau
 // feito para salto comum).
-function executablePrimitives(level, abilities = {}) {
+export function executablePrimitives(level, abilities = {}) {
   const all = level.primitives || [];
   const usable = all.filter(p => (p.requires || []).every(r => abilities[r]));
   return usable.length ? usable : all.filter(p => (p.requires || []).length === 0);
@@ -1005,8 +1005,20 @@ export function isIntentionalDynamicCrossing(level, previous, next) {
   // `azospirillumLadderHost` e `isThemedCrossing` passa a casar antes,
   // devolvendo `themedCrossing` — verdadeiro, mas genérico demais para quem
   // depura a silhueta.
+  //
+  // `ascentGateLadderValidated` é exigido, e não é mais um metadado.
+  // `validateAndRepairAzospirillumGates` é a única coisa que escreve esse campo,
+  // e só depois de inspecionar a escada de verdade: host, destino, monotonia dos
+  // degraus, espaçamento e alcance do último degrau. Antes bastavam os
+  // metadados de portão baterem — e eles batiam mesmo quando o pedido de escada
+  // tinha sido descartado em silêncio, o que transformava um softlock em
+  // "travessia intencional" no relatório.
+  //
+  // Portão sem atestado cai adiante: ou vira `themedCrossing`, ou vira falha
+  // ordinária. As duas leituras são preferíveis a uma aprovação falsa.
   if (next.ascentGate && previous.ascentGateHost
-    && previous.ascentGateId === next.ascentGateId) {
+    && previous.ascentGateId === next.ascentGateId
+    && next.ascentGateLadderValidated === true) {
     return {
       mechanic: 'azospirillumAscentGate',
       expectedBlockedUntilDeveloped: true,
