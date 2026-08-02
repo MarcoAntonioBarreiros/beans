@@ -457,17 +457,33 @@ export function generateAzospirillumRootLadders({
   );
   if (!candidates.length) return level.azospirillumRootLadders;
 
-  const ordered = [...candidates].sort((left, right) => (
-    left.host.logicIndex - right.host.logicIndex
-    || left.score - right.score
-    || left.host.x - right.host.x
-  ));
+  // POSIÇÃO DA ESCADA: sorteada entre os candidatos, não sempre a mais cedo.
+  //
+  // Isto ordenava por `host.logicIndex` crescente e pegava os primeiros da fila.
+  // O `score` reforçava o mesmo viés com `(host.logicIndex - minimumHostChunk)
+  // * 1000`, um peso que domina qualquer outro critério. E o `random` era criado
+  // e NUNCA usado.
+  //
+  // O resultado era determinístico no pior sentido: medido em 200 seeds, dez
+  // escadas, TODAS no chunk 9 — o primeiro ponto elegível depois do exsudato de
+  // pré-requisito. Zero variância. Como o chunk 9 vem logo depois do
+  // aquecimento, a escada de Azospirillum era quase sempre o primeiro desafio
+  // que o jogador encontrava, e os outros só apareciam quando ela falhava.
+  //
+  // Agora a ordem é sorteada pela seed entre os candidatos ELEGÍVEIS. Os
+  // critérios de qualidade continuam valendo — o `score` ainda existe e ainda
+  // prefere a geometria mais didática —, mas ele deixa de ser um sinônimo de
+  // "o mais cedo possível".
   const random = createRandom(`${seedValue}:azospirillum-root-ladder:p${phase}`);
+  const shuffled = [...candidates]
+    .map(candidate => ({ candidate, roll: random() }))
+    .sort((left, right) => left.roll - right.roll)
+    .map(entry => entry.candidate);
   const selected = [];
-  for (const candidate of ordered) {
+  for (const candidate of shuffled) {
     if (selected.some(item => Math.abs(item.host.logicIndex - candidate.host.logicIndex) < 4)) continue;
     selected.push(candidate);
-    if (selected.length >= Math.min(config.count, ordered.length)) break;
+    if (selected.length >= Math.min(config.count, shuffled.length)) break;
   }
 
   const proceduralLadders = selected

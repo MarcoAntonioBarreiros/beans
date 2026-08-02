@@ -194,6 +194,22 @@ export function createGameAudio({
   let lastFxId = null;
   let lastJumpAt = -Infinity;
 
+  /**
+   * Relogio MONOTONICO do audio, em segundos.
+   *
+   * Nao pertence a fase e nunca anda para tras. `AudioContext.currentTime` e a
+   * primeira escolha porque e o mesmo relogio que agenda os nos; `performance`
+   * e `Date` cobrem teste e ambiente sem Web Audio.
+   */
+  function monotonicAudioNow() {
+    const contextTime = context?.currentTime;
+    if (Number.isFinite(contextTime)) return contextTime;
+    if (typeof performance !== 'undefined' && Number.isFinite(performance?.now?.())) {
+      return performance.now() / 1000;
+    }
+    return Date.now() / 1000;
+  }
+
   const dropNodes = new Map();
   let currentDropId = null;
   let lastDropId = null;
@@ -1168,8 +1184,32 @@ export function createGameAudio({
     destroy,
     toneNow,
     debugSnapshot,
-    // Cooldown do salto: defesa contra repeat de teclado disparando o mesmo FX.
-    canPlayJump(now) {
+    /**
+     * Cooldown do salto: defesa contra repeat de teclado disparando o mesmo FX.
+     *
+     * O RELOGIO E DAQUI, e nao do gameplay. `physics.js` passava `state.time`, e
+     * `state.time` VOLTA A ZERO quando a fase reinicia (`simulator.js:333`),
+     * enquanto este controlador sobrevive ao reinicio com `lastJumpAt` guardado
+     * da tentativa anterior. O resultado era aritmetica contra um relogio que
+     * andou para tras:
+     *
+     *     tentativa anterior: lastJumpAt = 240 (segundos de jogo)
+     *     reinicio:           state.time = 0
+     *     primeiro salto:     0.1 - 240 = -239.9 < 0.05  ->  BLOQUEADO
+     *
+     * E continuava bloqueado ate `state.time` reescalar os 240 segundos. Nao era
+     * carregamento de buffer, nem ducking, nem o `gameOver` mascarando o salto:
+     * era o cooldown comparando dois instantes de linhas do tempo diferentes.
+     *
+     * `AudioContext.currentTime` e monotonico e nao pertence a fase — e o
+     * relogio certo para um cooldown de audio. Sem contexto (testes, ambiente
+     * sem Web Audio), cai para um monotonico equivalente.
+     *
+     * O parametro continua sendo aceito e IGNORADO: chamador antigo nao quebra,
+     * e nao ha como voltar a passar um relogio reiniciavel por engano.
+     */
+    canPlayJump() {
+      const now = monotonicAudioNow();
       if (now - lastJumpAt < 0.05) return false;
       lastJumpAt = now;
       return true;
