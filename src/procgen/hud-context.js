@@ -1,4 +1,22 @@
+import { getPhaseManifest, PHOSPHATE_SOLUBILIZATION_DEFAULTS } from './campaign-manifest.js';
 import { getNitrogenAvailability } from './nitrogen-availability.js';
+
+/**
+ * Capacidade de referência da barra de fósforo.
+ *
+ * É o mesmo `minimumTransportedPhosphate` que fecha o objetivo da fase, então
+ * 100% na barra quer dizer "a raiz já tem o que a fase pede" — e não um número
+ * bonito escolhido para a barra encher. Lido do manifesto da fase, com o padrão
+ * como reserva, porque uma fase pode exigir mais que a outra.
+ */
+export function phosphateHudCapacity(phase) {
+  const manifest = getPhaseManifest(phase);
+  const minimum = manifest?.phosphateSolubilization?.minimumTransportedPhosphate;
+  const capacity = Number.isFinite(minimum) && minimum > 0
+    ? minimum
+    : PHOSPHATE_SOLUBILIZATION_DEFAULTS.minimumTransportedPhosphate;
+  return Math.max(0.01, capacity);
+}
 
 if (typeof window !== 'undefined') {
   window._activeGauges = window._activeGauges || new Set();
@@ -163,17 +181,30 @@ export function updateContextPanel(state, nearbyRoot, contextDiv, sim) {
       mobileGaugesHtml += circularGaugeMarkup({ label: 'Nitrogênio (N)', symbol: 'N', valueText: `${Math.round(nPct)}%`, pct: nPct, color: '#ffd783' });
     }
 
-    // Phosphorus
-    const availablePhosphate = sim.phosphateSolubilization?.availablePhosphate || 0;
-    if (phase >= 7 || availablePhosphate > 0) {
-      const pPct = Math.min(100, availablePhosphate * 100);
+    // FÓSFORO NA RAIZ
+    //
+    // Lia `phosphateSolubilization.availablePhosphate`, que NÃO EXISTE — o
+    // módulo publica `transportedPhosphate` e `rootPhosphateStock`, e mais nada.
+    // Propriedade inexistente vira `undefined`, o `|| 0` transformava isso em
+    // zero, e o indicador ficava em 0% para sempre. Não era erro de cálculo:
+    // era um nome que nunca casou com nada.
+    //
+    // O que interessa mostrar é o ESTOQUE, não a poça. `root.phosphateStock`
+    // acumula o que a micorriza entregou e não é decrementado em lugar nenhum,
+    // então esvaziar o pool do solo não zera o indicador — o fósforo saiu do
+    // solo e entrou na raiz, que é exatamente o que a fase ensina.
+    const rootPhosphate = sim.phosphateSolubilization?.rootPhosphateStock || 0;
+    if (phase >= 7 || rootPhosphate > 0) {
+      // Capacidade de referência: o mesmo mínimo que fecha o objetivo, lido do
+      // manifesto da fase. Nada de máximo inventado só para o HUD.
+      const pPct = Math.min(100, (rootPhosphate / phosphateHudCapacity(phase)) * 100);
       html += `
         <div class="context-item">
-          <span>Fósforo (P): <strong>${Math.round(pPct)}%</strong></span>
+          <span>Fósforo na raiz (P): <strong>${Math.round(pPct)}%</strong></span>
           <div class="context-bar"><div class="context-bar-fill" style="width: ${pPct}%; background: #c9a5ff;"></div></div>
         </div>
       `;
-      mobileGaugesHtml += circularGaugeMarkup({ label: 'Fósforo (P)', symbol: 'P', valueText: `${Math.round(pPct)}%`, pct: pPct, color: '#c9a5ff' });
+      mobileGaugesHtml += circularGaugeMarkup({ label: 'Fósforo na raiz (P)', symbol: 'P', valueText: `${Math.round(pPct)}%`, pct: pPct, color: '#c9a5ff' });
     }
 
     // Antibiosis

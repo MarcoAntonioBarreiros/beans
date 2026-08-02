@@ -10,6 +10,7 @@ import {
 import { PLAYER_SKINS, PLAYER_SKIN_STORAGE_KEY, resolvePlayerSkin } from '../render/player-skins.js';
 import { PATHOGEN_PRESSURE_DEFAULTS } from './pathogen-pressure.js';
 import { PATHOGEN_ARRIVAL_DEFAULTS } from './pathogen-arrival.js';
+import { phosphateHudCapacity } from './hud-context.js';
 import {
   PLAYER_TUNING_LIMITS, getPlayerTuning, resetPlayerTuning, setPlayerTuning,
 } from '../render/player-skin-tuning.js';
@@ -315,7 +316,10 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
       </div></fieldset>
       <fieldset><legend>Solubilizacao e transporte de fosfato</legend><div class="resources">
         ${PHOSPHATE_FIELDS.map(key => `<label>${PHOSPHATE_LABELS[key] || key}<input data-phosphate="${key}" type="number" min="0" step="${PHOSPHATE_STEPS[key] || '1'}"></label>`).join('')}
-      </div></fieldset>
+      </div>
+        <p style="margin:6px 0 0; font-size:11px; opacity:.72;">O caminho do fósforo tem quatro etapas e cada uma tem seu número: solubilizado → disponível no solo → transportado → armazenado na raiz. O HUD mostra a última.</p>
+        <pre data-phosphate-readout style="margin:8px 0 0; padding:8px; border-radius:8px; background:#04181bcc; color:#cdefe9; font:11px/1.45 ui-monospace,Consolas,monospace; white-space:pre-wrap;">sem leitura</pre>
+      </fieldset>
       <fieldset><legend>Meloidogyne</legend><div class="resources">
         <label>Focos: 1 a cada N chunks<input data-meloidogyne="focusSpacingChunks" type="number" min="2" max="40"></label>
         <label>Máximo de focos<input data-meloidogyne="maxFoci" type="number" min="1" max="12"></label>
@@ -572,6 +576,7 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
     });
     mountPressureReadout(panel, windowObject);
     mountArrivalReadout(panel, windowObject);
+    mountPhosphateReadout(panel, windowObject);
     return panel;
   }
 
@@ -650,6 +655,64 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
   // forcadas usam `forceArrival`, que passa pelas MESMAS APIs e pelos mesmos
   // estagios da chegada por pressao — o Lab encurta a espera, nao cria um
   // segundo caminho.
+  // DIAGNOSTICO DO FOSFORO
+  //
+  // O indicador do HUD ficava em zero porque lia um nome que nao existia, e nao
+  // havia onde conferir. As quatro etapas passam a aparecer separadas: se o
+  // numero parar de subir, da para ver EM QUAL delas parou — sem solubilizar,
+  // sem micorriza no alcance, ou ja entregue e armazenado.
+  function mountPhosphateReadout(panel, windowObject) {
+    const readout = panel.querySelector('[data-phosphate-readout]');
+    if (!readout) return;
+    const render = () => {
+      const sim = windowObject.miguelitoSim;
+      const phosphate = sim?.phosphateSolubilization;
+      const level = sim?.state?.level;
+      if (!phosphate || !level) {
+        readout.textContent = 'sem leitura (fase não iniciada)';
+        return;
+      }
+      const round = value => (Math.round(Number(value) * 1000) / 1000).toFixed(3);
+      const pools = level.availablePhosphatePools || [];
+      const soil = pools.reduce((sum, pool) => sum + Math.max(0, pool.amount || 0), 0);
+      const deposits = level.phosphateDeposits || [];
+      const insoluble = deposits.reduce((sum, entry) => sum + (entry.remainingPhosphate || 0), 0);
+      // Por raiz que RECEBEU: sem isto o total nao diz para onde o fosforo foi,
+      // e "0,4 armazenado" pode ser uma raiz ou quatro.
+      const stocked = (level.platforms || [])
+        .filter(platform => (platform.phosphateStock || 0) > 0)
+        .sort((left, right) => (right.phosphateStock || 0) - (left.phosphateStock || 0))
+        .map(platform => {
+          const carrier = pools.find(pool => pool.transportingColony?.platform === platform);
+          return `    c${platform.logicIndex ?? '?'} estoque=${round(platform.phosphateStock)}`
+            + ` saude=${round(platform.rootHealth ?? 1)}`
+            + ` micorriza=${carrier?.transportingColony?.id || carrier?.depositId || '—'}`;
+        })
+        .join('\n') || '    (nenhuma raiz recebeu fosforo ainda)';
+      const poolLines = pools
+        .map(pool => (
+          `    ${pool.depositId} amount=${round(pool.amount)} ${pool.absorptionState || '—'}`
+          + `${pool.transportingColony ? '' : ' (sem micorriza no alcance)'}`
+        ))
+        .join('\n') || '    (nenhuma poca aberta)';
+      readout.textContent = [
+        `P insoluvel (deposito) : ${round(insoluble)}`,
+        `P disponivel no solo   : ${round(soil)}   <- soma de availablePhosphatePools[].amount`,
+        `P transportado na fase : ${round(phosphate.transportedPhosphate)}`,
+        `P armazenado nas raizes: ${round(phosphate.rootPhosphateStock)}   <- e este que alimenta o HUD`,
+        `capacidade do HUD      : ${round(phosphateHudCapacity(sim?.state?.campaign?.phase ?? 0))}`
+          + '   (minimumTransportedPhosphate da fase)',
+        'pocas disponiveis      :',
+        poolLines,
+        'raizes com estoque     :',
+        stocked,
+      ].join('\n');
+    };
+    render();
+    const timer = windowObject.setInterval(render, 250);
+    windowObject.addEventListener?.('beforeunload', () => windowObject.clearInterval(timer));
+  }
+
   function mountArrivalReadout(panel, windowObject) {
     const readout = panel.querySelector('[data-arrival-readout]');
     if (!readout) return;
@@ -709,6 +772,30 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
           + `=${round(detail.upperStop.interval)}s`
           + ` @${Math.round((detail.fraction || 0) * 100)}%]`
         : `${round(reading.currentMeanInterval)}s`;
+      // O GRUPO de Meloidogyne, por deslocamento real. O progresso vinha de um
+      // cronometro e chegava a 100% com os J2 ainda a meia tela da raiz.
+      const group = reading.meloidogyneArrival;
+      const melo = group
+        ? [
+            `grupo              : ${group.groupId} [${group.state}]`
+              + ` alvo c${group.targetLogicIndex ?? '?'} <- ${group.originType}`,
+            `  J2               : ${group.activeCount} em transito`
+              + ` / ${group.initialCount} iniciais`
+              + ` / ${group.capturedCount} capturados`
+              + ` / ${group.arrivedCount} chegaram`,
+            `  posicao media    : ${group.meanX === null ? '—' : Math.round(group.meanX)}`
+              + `, ${group.meanY === null ? '—' : Math.round(group.meanY)}`,
+            `  percurso         : ${Math.round(group.traveledDistance)}`
+              + ` / ${Math.round(group.totalDistance)}px`
+              + ` (faltam ${Math.round(group.remainingDistance)}px)`
+              + ` = ${Math.round(group.progress * 100)}%`,
+            `  velocidade       : ${round(group.speed)} px/s`
+              + ` -> ${round(group.estimatedSecondsRemaining)}s restantes`,
+            `  aviso            : ${group.warningTriggered ? 'iniciado' : 'nao'}`
+              + ` (raio ${group.warningDistance}px,`
+              + ` distancia atual ${group.distanceToRoot === null ? '—' : Math.round(group.distanceToRoot)}px)`,
+          ].join('\n')
+        : 'nenhum grupo em transito';
       const scorePathogen = reading.warning?.pathogen || 'meloidogyne';
       const scores = (reading.candidateScores?.[scorePathogen] || []).slice(0, 4)
         .map(entry => (
@@ -734,6 +821,7 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
           + ` (melo ${reading.activeByPathogen?.meloidogyne ?? 0},`
           + ` ralstonia ${reading.activeByPathogen?.ralstonia ?? 0})`,
         `em deslocamento    : ${travel}`,
+        `meloidogyne        : ${melo}`,
         `chegadas           : ${reading.totalArrivals}`
           + ` (melo ${reading.arrivalsByPathogen?.meloidogyne ?? 0},`
           + ` ralstonia ${reading.arrivalsByPathogen?.ralstonia ?? 0})`,

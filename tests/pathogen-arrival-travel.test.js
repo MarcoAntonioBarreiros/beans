@@ -9,6 +9,7 @@ import {
 import { PATHOGEN_PRESSURE_DEFAULTS } from '../src/procgen/pathogen-pressure.js';
 import { createPlatformVisuals } from '../src/procgen/platform-visuals.js';
 import { createRalstoniaVascularWilt } from '../src/procgen/ralstonia-vascular-wilt.js';
+import { MELOIDOGYNE_BASE_SPEED } from '../src/procgen/meloidogyne-lifecycle.js';
 import { createSimulator } from '../src/procgen/simulator.js';
 
 // CORREÇÕES DA ETAPA 2 — o relógio e o corpo
@@ -43,24 +44,116 @@ function root(index, overrides = {}) {
 function fakeSystems() {
   const meloArrivals = [];
   const ralstoniaArrivals = [];
+  // Fechamento, e nao `this`: o controlador extrai o metodo para chamar
+  // (`const api = arrivalApi(pathogen)`), entao um duplo que dependa de `this`
+  // quebra por motivo de teste, nao de produto.
   const juveniles = [];
   const galls = [];
   const eggMasses = [];
   const foci = [];
+  let groupSerial = 0;
+  // O duplo precisa cobrir o CONTRATO NOVO: o controlador nao conta mais a
+  // chegada ao criar os J2 — ele observa o grupo e conta quando alguem alcanca
+  // a rizosfera. Sem `arrivalGroupSnapshot` aqui, ele observaria o vazio.
+  const meloidogyneLifecycle = {
+    juveniles,
+    galls,
+    eggMasses,
+    introduceJ2Arrival(request) {
+      meloArrivals.push(request);
+      const groupId = `fake-group-${++groupSerial}`;
+      const speed = request.travelSpeed || 47;
+      const pathLength = 600;
+      const created = [0, 1].map(() => ({
+        alive: true, state: 'seeking',
+        x: request.originX ?? 0, y: request.originY ?? 0,
+        arrivalGroupId: groupId, arrivalTransit: true,
+        arrivalCompleted: false, arrivalIntercepted: false,
+        arrivalSpeed: speed, arrivalPathLength: pathLength,
+        arrivalTraveled: 0, arrivalProgress: 0,
+        arrivalPreferredRoot: request.preferredRoot || null,
+      }));
+      juveniles.push(...created);
+      return {
+        ...request, groupId, juveniles: created, count: created.length,
+        speed, pathLength, travelSeconds: pathLength / speed, transit: true,
+      };
+    },
+    arrivalGroupSnapshot(groupId) {
+      const members = juveniles.filter(entry => entry.arrivalGroupId === groupId);
+      const transit = members.filter(entry => entry.arrivalTransit && entry.alive);
+      const arrived = members.filter(entry => entry.arrivalCompleted);
+      const intercepted = members.filter(entry => entry.arrivalIntercepted);
+      const mean = key => (transit.length
+        ? transit.reduce((sum, entry) => sum + entry[key], 0) / transit.length : null);
+      const pathLength = transit.length ? transit[0].arrivalPathLength : 600;
+      const traveled = transit.length ? transit[0].arrivalTraveled : pathLength;
+      return {
+        groupId,
+        memberCount: members.length,
+        transitCount: transit.length,
+        arrivedCount: arrived.length,
+        interceptedCount: intercepted.length,
+        meanX: mean('x'), meanY: mean('y'),
+        pathLength, traveled,
+        remaining: Math.max(0, pathLength - traveled),
+        speed: transit.length ? transit[0].arrivalSpeed : 47,
+        estimatedSecondsRemaining: Math.max(0, pathLength - traveled) / 47,
+        progress: transit.length
+          ? Math.min(.999, traveled / pathLength)
+          : (arrived.length ? 1 : 0),
+      };
+    },
+    releaseArrivalGroup(groupId) {
+      const group = juveniles.filter(e => e.arrivalGroupId === groupId && e.arrivalTransit);
+      for (const entry of group) {
+        entry.arrivalTransit = false;
+        entry.arrivalCompleted = true;
+        entry.arrivalProgress = 1;
+        entry.arrivalTraveled = entry.arrivalPathLength;
+      }
+      return group.length;
+    },
+    removeArrivalGroup(groupId) {
+      let removed = 0;
+      for (let index = juveniles.length - 1; index >= 0; index--) {
+        if (juveniles[index].arrivalGroupId !== groupId || !juveniles[index].arrivalTransit) continue;
+        juveniles.splice(index, 1);
+        removed++;
+      }
+      return removed;
+    },
+    // Atalhos de teste: empurram o grupo pelo trajeto sem rodar o ciclo real.
+    advanceGroup(groupId, pixels) {
+      for (const entry of juveniles) {
+        if (entry.arrivalGroupId !== groupId || !entry.arrivalTransit) continue;
+        entry.arrivalTraveled = Math.min(entry.arrivalPathLength, entry.arrivalTraveled + pixels);
+        entry.arrivalProgress = entry.arrivalTraveled / entry.arrivalPathLength;
+        const root = entry.arrivalPreferredRoot;
+        if (root) {
+          const t = entry.arrivalProgress;
+          entry.x = (entry.x) + (root.x + root.w * .4 - entry.x) * t;
+          entry.y = (entry.y) + (root.y + 30 - entry.y) * t;
+        }
+        if (entry.arrivalTraveled >= entry.arrivalPathLength) {
+          entry.arrivalTransit = false;
+          entry.arrivalCompleted = true;
+        }
+      }
+    },
+    captureGroup(groupId) {
+      for (const entry of juveniles) {
+        if (entry.arrivalGroupId !== groupId || !entry.arrivalTransit) continue;
+        entry.arrivalTransit = false;
+        entry.arrivalIntercepted = true;
+        entry.alive = false;
+      }
+    },
+  };
   return {
     meloArrivals,
     ralstoniaArrivals,
-    meloidogyneLifecycle: {
-      juveniles, galls, eggMasses,
-      introduceJ2Arrival(request) {
-        meloArrivals.push(request);
-        const created = [
-          { alive: true, state: 'seeking', x: request.originX ?? 0, y: request.originY ?? 0 },
-        ];
-        juveniles.push(...created);
-        return { ...request, juveniles: created, count: created.length };
-      },
-    },
+    meloidogyneLifecycle,
     ralstoniaControl: {
       foci,
       introduceEnvironmentalInoculum(request) {
@@ -623,18 +716,21 @@ test('30. com o painel de debug ligado, origem, trajetória e alvo voltam a apar
 // APROXIMAÇÃO (`arrivalTransit`) conduzido pelo lifecycle durante
 // `warningSeconds`, e só depois viram J2 comuns.
 
-function transitHarness({ travelSeconds = 5, originX = -300, originY = 620 } = {}) {
+function transitHarness({ travelSpeed = MELOIDOGYNE_BASE_SPEED, originX = -300, originY = 620 } = {}) {
   const sim = createSimulator();
   sim.state.level.dynamicPathogenArrival = true;
+  // Geometria realista: a 47 px/s a origem tem de estar a uma distancia
+  // plausivel — e o que `constrainOriginToView` garante no jogo. Um alvo a duas
+  // telas daria uma travessia de quase um minuto, que nao e o caso de uso.
   sim.state.level.platforms = [
-    { x: 300, y: 500, w: 240, h: 54, type: 'root', logicIndex: 1 },
-    { x: 1400, y: 470, w: 240, h: 54, type: 'root', logicIndex: 4 },
+    { x: 900, y: 500, w: 240, h: 54, type: 'root', logicIndex: 1 },
+    { x: 300, y: 470, w: 240, h: 54, type: 'root', logicIndex: 4 },
   ];
   sim.state.level.exudateClouds = [];
   sim.meloidogyneLifecycle.reset();
   const target = sim.state.level.platforms[1];
   const result = sim.meloidogyneLifecycle.introduceJ2Arrival({
-    originX, originY, preferredRoot: target, travelSeconds, source: 'test',
+    originX, originY, preferredRoot: target, travelSpeed, source: 'test',
   });
   return { sim, target, result };
 }
@@ -661,8 +757,15 @@ test('31. a chegada cria um grupo de J2 em aproximação, com identidade comum',
     assert.equal(juvenile.arrivalTransit, true);
     assert.equal(juvenile.arrivalGroupId, result.groupId, 'J2 da mesma chegada em grupos diferentes');
     assert.equal(juvenile.arrivalProgress, 0);
-    assert.equal(juvenile.arrivalDuration, 5);
+    assert.equal(juvenile.arrivalSpeed, MELOIDOGYNE_BASE_SPEED);
+    // A duracao NAO e um parametro: ela sai do comprimento da propria curva.
+    assert.ok(juvenile.arrivalPathLength > 0);
+    assert.ok(Math.abs(
+      juvenile.arrivalDuration - juvenile.arrivalPathLength / MELOIDOGYNE_BASE_SPEED,
+    ) < 1e-6);
   }
+  assert.ok(result.travelSeconds > 0);
+  assert.equal(result.speed, MELOIDOGYNE_BASE_SPEED);
 });
 
 test('32. em aproximação o J2 não penetra e não faz o retarget normal', () => {
@@ -683,12 +786,12 @@ test('32. em aproximação o J2 não penetra e não faz o retarget normal', () =
 });
 
 test('33. o grupo atravessa o solo: a distância até a raiz cai ao longo do percurso', () => {
-  const { sim, target } = transitHarness();
+  const { sim, target, result } = transitHarness();
   const juvenile = sim.meloidogyneLifecycle.juveniles[0];
   const start = distanceToRoot(juvenile, target);
   const samples = [start];
   for (let quarter = 0; quarter < 4; quarter++) {
-    runLifecycle(sim, 1.2);
+    runLifecycle(sim, result.travelSeconds / 4);
     samples.push(distanceToRoot(juvenile, target));
   }
   for (let index = 1; index < samples.length; index++) {
@@ -700,17 +803,28 @@ test('33. o grupo atravessa o solo: a distância até a raiz cai ao longo do per
   assert.ok(samples.at(-1) < start * 0.25, `terminou longe demais: ${samples.at(-1)} de ${start}`);
 });
 
-test('34. o percurso dura o tempo pedido e devolve o J2 à busca normal', () => {
-  const { sim, target } = transitHarness({ travelSeconds: 5 });
-  runLifecycle(sim, 4.5);
+test('34. o percurso dura o comprimento dividido pela velocidade, e devolve o J2 à busca', () => {
+  const { sim, target, result } = transitHarness();
+  const expected = result.travelSeconds;
+  // A duracao nao e escolhida: e consequencia. Percorrer 47px leva 1s, sempre.
+  assert.ok(
+    Math.abs(expected - result.pathLength / MELOIDOGYNE_BASE_SPEED) < 1e-6,
+    'a duracao nao saiu do comprimento da trajetoria',
+  );
+  runLifecycle(sim, expected * 0.85);
   assert.ok(sim.meloidogyneLifecycle.arrivalTransitCount > 0, 'terminou antes da hora');
-  runLifecycle(sim, 1);
+  runLifecycle(sim, expected * 0.4);
   assert.equal(sim.meloidogyneLifecycle.arrivalTransitCount, 0, 'não terminou no tempo');
   for (const juvenile of sim.meloidogyneLifecycle.juveniles) {
     assert.equal(juvenile.arrivalTransit, false);
-    assert.equal(juvenile.state, 'seeking', 'não foi liberado para a busca normal');
-    assert.ok(juvenile.retarget > 0, 'liberado sem tempo de retarget');
-    // Chegou na rizosfera: perto da raiz, ainda no solo.
+    assert.equal(juvenile.arrivalCompleted, true, 'não foi marcado como chegado');
+    // Liberado para o ciclo normal: ou ainda procurando, ou ja entrando na
+    // raiz. O que nao pode e ter ficado preso no estado de aproximacao.
+    assert.ok(
+      ['seeking', 'penetrating', 'migrating'].includes(juvenile.state),
+      `estado inesperado depois da liberacao: ${juvenile.state}`,
+    );
+    // Chegou na rizosfera: perto da raiz.
     assert.ok(distanceToRoot(juvenile, target) < 220);
   }
 });
@@ -718,7 +832,7 @@ test('34. o percurso dura o tempo pedido e devolve o J2 à busca normal', () => 
 test('35. a aproximação usa dt, não a contagem de quadros', () => {
   const measure = step => {
     const { sim } = transitHarness();
-    runLifecycle(sim, 2.4, step);
+    runLifecycle(sim, 6, step);
     return sim.meloidogyneLifecycle.juveniles[0].arrivalProgress;
   };
   const fine = measure(1 / 120);
@@ -727,10 +841,12 @@ test('35. a aproximação usa dt, não a contagem de quadros', () => {
 });
 
 test('36. a aproximação acompanha a raiz se ela se mover', () => {
-  const { sim, target } = transitHarness();
-  runLifecycle(sim, 2);
+  const { sim, target, result } = transitHarness();
+  runLifecycle(sim, result.travelSeconds * 0.4);
   target.x += 600;
-  runLifecycle(sim, 3.2);
+  // O percurso ficou mais longo, entao a viagem demora mais — o grupo NAO
+  // acelera para compensar, e por isso o tempo extra e generoso.
+  runLifecycle(sim, result.travelSeconds * 2 + 600 / MELOIDOGYNE_BASE_SPEED);
   for (const juvenile of sim.meloidogyneLifecycle.juveniles) {
     assert.ok(
       distanceToRoot(juvenile, target) < 260,
@@ -741,7 +857,7 @@ test('36. a aproximação acompanha a raiz se ela se mover', () => {
 
 test('37. cada J2 tem seu próprio desvio: o grupo não viaja empilhado', () => {
   const { sim } = transitHarness();
-  runLifecycle(sim, 2.5);
+  runLifecycle(sim, 6);
   const juveniles = sim.meloidogyneLifecycle.juveniles;
   let maxSeparation = 0;
   for (let a = 0; a < juveniles.length; a++) {
@@ -761,7 +877,7 @@ test('38. a mesma chegada produz a mesma trajetória', () => {
     const { sim } = transitHarness();
     const path = [];
     for (let sample = 0; sample < 5; sample++) {
-      runLifecycle(sim, 0.8);
+      runLifecycle(sim, 2);
       const juvenile = sim.meloidogyneLifecycle.juveniles[0];
       path.push([Math.round(juvenile.x), Math.round(juvenile.y)]);
     }
@@ -773,7 +889,7 @@ test('38. a mesma chegada produz a mesma trajetória', () => {
 test('39. sem tempo de percurso o comportamento antigo continua igual', () => {
   // A eclosão de uma massa de ovos não é uma chegada: o J2 nasce na raiz e já
   // procura. Só a chegada externa tem aproximação.
-  const { sim } = transitHarness({ travelSeconds: 0 });
+  const { sim } = transitHarness({ travelSpeed: 0 });
   for (const juvenile of sim.meloidogyneLifecycle.juveniles) {
     assert.ok(!juvenile.arrivalTransit, 'criou aproximação sem tempo de percurso');
   }
@@ -797,11 +913,12 @@ test('40. o controlador não move os J2 — quem conduz é o lifecycle', () => {
   }
 });
 
-test('41. a chegada passa a duração do percurso para o ciclo', () => {
+test('41. a chegada passa a VELOCIDADE para o ciclo, não uma duração', () => {
   const { state, arrival, systems } = harness();
   arrival.forceArrival('meloidogyne');
   const request = systems.meloArrivals.at(-1);
-  assert.equal(request.travelSeconds, ARRIVAL.warningSeconds);
+  assert.equal(request.travelSpeed, MELOIDOGYNE_BASE_SPEED);
+  assert.equal(request.travelSeconds, undefined, 'ainda manda duração pronta');
   assert.ok(Number.isFinite(request.originX) && Number.isFinite(request.originY));
   assert.ok(request.preferredRoot, 'a raiz preferida não foi passada');
   assert.equal(state.level.pathogenArrival.warning.pathogen, 'meloidogyne');
@@ -1009,24 +1126,27 @@ test('46. o caminho completo do Phase Lab: origem, travessia, rizosfera, busca',
   const startDistance = distanceToRoot(juvenile, target);
   assert.ok(startDistance > 300, `nasceu perto demais do alvo: ${Math.round(startDistance)}px`);
 
-  // 2 · grupo atravessando o solo, conduzido pelo ciclo.
+  // 2 · grupo atravessando o solo, conduzido pelo ciclo, a 47 px/s.
   assert.ok(sim.meloidogyneLifecycle.arrivalTransitCount >= 2);
-  for (let frame = 0; frame < 60 * 3; frame++) {
-    state.time += STEP;
-    sim.meloidogyneLifecycle.update(STEP);
-    arrival.update(STEP);
-  }
+  const estimate = state.level.pathogenArrival.meloidogyneArrival.totalDistance
+    / MELOIDOGYNE_BASE_SPEED;
+  const run = seconds => {
+    for (let frame = 0; frame < Math.round(seconds * 60); frame++) {
+      state.time += STEP;
+      sim.meloidogyneLifecycle.update(STEP);
+      arrival.update(STEP);
+    }
+  };
+  run(estimate * 0.5);
   assert.ok(
-    distanceToRoot(juvenile, target) < startDistance * 0.6,
-    'o grupo mal saiu do lugar em três segundos',
+    distanceToRoot(juvenile, target) < startDistance * 0.7,
+    'o grupo mal saiu do lugar na metade do percurso',
   );
+  // Metade do caminho e o aviso ainda nao pode ter sido contabilizado.
+  assert.equal(state.level.pathogenArrival.totalArrivals, 0, 'contou antes de chegar');
 
   // 3 · chegada à rizosfera e liberação para a busca normal.
-  for (let frame = 0; frame < 60 * 3; frame++) {
-    state.time += STEP;
-    sim.meloidogyneLifecycle.update(STEP);
-    arrival.update(STEP);
-  }
+  run(estimate * 0.7);
   assert.equal(sim.meloidogyneLifecycle.arrivalTransitCount, 0, 'o grupo não foi liberado');
   assert.equal(state.level.pathogenArrival.warning, null, 'o acompanhamento não terminou');
   // 4 · daqui em diante é o ciclo de sempre: ele encontrou raiz e entrou nela.

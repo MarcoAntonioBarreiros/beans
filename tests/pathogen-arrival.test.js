@@ -27,26 +27,109 @@ function fakeSystems() {
   const galls = [];
   const eggMasses = [];
   const foci = [];
+  let groupSerial = 0;
+  // O duplo precisa cobrir o CONTRATO NOVO: o controlador nao conta mais a
+  // chegada ao criar os J2 — ele observa o grupo e conta quando alguem alcanca
+  // a rizosfera. Sem `arrivalGroupSnapshot` aqui, ele observaria o vazio.
+  const meloidogyneLifecycle = {
+    juveniles,
+    galls,
+    eggMasses,
+    introduceJ2Arrival(request) {
+      meloArrivals.push(request);
+      const groupId = `fake-group-${++groupSerial}`;
+      const speed = request.travelSpeed || 47;
+      const pathLength = 600;
+      const created = [0, 1].map(() => ({
+        alive: true, state: 'seeking',
+        x: request.originX ?? 0, y: request.originY ?? 0,
+        arrivalGroupId: groupId, arrivalTransit: true,
+        arrivalCompleted: false, arrivalIntercepted: false,
+        arrivalSpeed: speed, arrivalPathLength: pathLength,
+        arrivalTraveled: 0, arrivalProgress: 0,
+        arrivalPreferredRoot: request.preferredRoot || null,
+      }));
+      juveniles.push(...created);
+      return {
+        ...request, groupId, juveniles: created, count: created.length,
+        speed, pathLength, travelSeconds: pathLength / speed, transit: true,
+      };
+    },
+    arrivalGroupSnapshot(groupId) {
+      const members = juveniles.filter(entry => entry.arrivalGroupId === groupId);
+      const transit = members.filter(entry => entry.arrivalTransit && entry.alive);
+      const arrived = members.filter(entry => entry.arrivalCompleted);
+      const intercepted = members.filter(entry => entry.arrivalIntercepted);
+      const mean = key => (transit.length
+        ? transit.reduce((sum, entry) => sum + entry[key], 0) / transit.length : null);
+      const pathLength = transit.length ? transit[0].arrivalPathLength : 600;
+      const traveled = transit.length ? transit[0].arrivalTraveled : pathLength;
+      return {
+        groupId,
+        memberCount: members.length,
+        transitCount: transit.length,
+        arrivedCount: arrived.length,
+        interceptedCount: intercepted.length,
+        meanX: mean('x'), meanY: mean('y'),
+        pathLength, traveled,
+        remaining: Math.max(0, pathLength - traveled),
+        speed: transit.length ? transit[0].arrivalSpeed : 47,
+        estimatedSecondsRemaining: Math.max(0, pathLength - traveled) / 47,
+        progress: transit.length
+          ? Math.min(.999, traveled / pathLength)
+          : (arrived.length ? 1 : 0),
+      };
+    },
+    releaseArrivalGroup(groupId) {
+      const group = juveniles.filter(e => e.arrivalGroupId === groupId && e.arrivalTransit);
+      for (const entry of group) {
+        entry.arrivalTransit = false;
+        entry.arrivalCompleted = true;
+        entry.arrivalProgress = 1;
+        entry.arrivalTraveled = entry.arrivalPathLength;
+      }
+      return group.length;
+    },
+    removeArrivalGroup(groupId) {
+      let removed = 0;
+      for (let index = juveniles.length - 1; index >= 0; index--) {
+        if (juveniles[index].arrivalGroupId !== groupId || !juveniles[index].arrivalTransit) continue;
+        juveniles.splice(index, 1);
+        removed++;
+      }
+      return removed;
+    },
+    // Atalhos de teste: empurram o grupo pelo trajeto sem rodar o ciclo real.
+    advanceGroup(groupId, pixels) {
+      for (const entry of juveniles) {
+        if (entry.arrivalGroupId !== groupId || !entry.arrivalTransit) continue;
+        entry.arrivalTraveled = Math.min(entry.arrivalPathLength, entry.arrivalTraveled + pixels);
+        entry.arrivalProgress = entry.arrivalTraveled / entry.arrivalPathLength;
+        const root = entry.arrivalPreferredRoot;
+        if (root) {
+          const t = entry.arrivalProgress;
+          entry.x = (entry.x) + (root.x + root.w * .4 - entry.x) * t;
+          entry.y = (entry.y) + (root.y + 30 - entry.y) * t;
+        }
+        if (entry.arrivalTraveled >= entry.arrivalPathLength) {
+          entry.arrivalTransit = false;
+          entry.arrivalCompleted = true;
+        }
+      }
+    },
+    captureGroup(groupId) {
+      for (const entry of juveniles) {
+        if (entry.arrivalGroupId !== groupId || !entry.arrivalTransit) continue;
+        entry.arrivalTransit = false;
+        entry.arrivalIntercepted = true;
+        entry.alive = false;
+      }
+    },
+  };
   return {
     meloArrivals,
     ralstoniaArrivals,
-    meloidogyneLifecycle: {
-      juveniles,
-      galls,
-      eggMasses,
-      introduceJ2Arrival(request) {
-        meloArrivals.push(request);
-        // Os J2 REAIS nascem na origem e o controlador guarda a referência
-        // deles para poder retirá-los se o percurso for cancelado. O duplo
-        // precisa devolver a lista, como o módulo devolve.
-        const created = [
-          { alive: true, state: 'seeking', x: request.originX ?? 0, y: request.originY ?? 0 },
-          { alive: true, state: 'seeking', x: request.originX ?? 0, y: request.originY ?? 0 },
-        ];
-        juveniles.push(...created);
-        return { ...request, juveniles: created, count: created.length };
-      },
-    },
+    meloidogyneLifecycle,
     ralstoniaControl: {
       foci,
       introduceEnvironmentalInoculum(request) {
@@ -398,17 +481,26 @@ test('19. o percurso termina e produz exatamente uma chegada', () => {
   assert.equal(arrival.warning, null);
 });
 
-test('19a. a Meloidogyne já nasce como J2 no início do percurso, e só uma vez', () => {
-  // Aqui é o contrário, e de propósito: o J2 é o próprio estágio inicial do
-  // ciclo. Não existe "inóculo de nematoide" a caminho — o que atravessa o solo
-  // é o organismo, então ele existe desde a origem.
+test('19a. os J2 nascem na origem, mas NASCER NÃO É CHEGAR', () => {
+  // O J2 é o próprio estágio inicial do ciclo, então ele existe desde a origem
+  // — mas a chegada só conta quando alguém alcança a rizosfera. Contar no
+  // nascimento fazia um grupo inteiro capturado no caminho valer como chegada.
   const { state, arrival, systems } = harness({ band: 'critical' });
   arrival.forceArrival('meloidogyne');
   assert.equal(systems.meloArrivals.length, 1, 'os J2 não nasceram no início');
-  assert.equal(arrival.totalArrivals, 1, 'a chegada não foi contada uma vez só');
+  assert.equal(arrival.totalArrivals, 0, 'contou a chegada ao criar os J2');
+  assert.equal(state.level.pathogenArrival.meloidogyneArrival.state, 'travelling');
 
+  // Tempo passa e nada chega: sem alcançar a rizosfera não há contagem.
   advance(arrival, state, PATHOGEN_ARRIVAL_DEFAULTS.warningSeconds + 0.5);
-  assert.equal(systems.meloArrivals.length, 1, 'a mesma chegada foi contada duas vezes');
+  assert.equal(arrival.totalArrivals, 0, 'o relógio contabilizou uma chegada sozinho');
+  assert.ok(arrival.warning, 'o acompanhamento do grupo terminou por tempo');
+
+  // Alcançou: aí sim, e uma vez só, mesmo com dois J2 no grupo.
+  systems.meloidogyneLifecycle.releaseArrivalGroup(arrival.warning.groupId);
+  arrival.update(1 / 60);
+  assert.equal(arrival.totalArrivals, 1, 'a chegada não foi contada ao alcançar');
+  assert.equal(arrival.arrivalsByPathogen.meloidogyne, 1);
   assert.equal(arrival.warning, null);
 });
 
@@ -435,9 +527,12 @@ test('21. seeds diferentes podem produzir sequências diferentes', () => {
   const run = seed => {
     const kit = harness({ band: 'critical', seed });
     advance(kit.arrival, kit.state, 400);
+    // `travel-start` e o evento SORTEADO — e a decisao que depende da seed. A
+    // contagem da Meloidogyne agora depende de o grupo alcancar a rizosfera, o
+    // que o duplo nao simula sozinho, entao ela nao serve para medir seed.
     return kit.arrival.eventHistory
-      .filter(entry => entry.kind === 'arrival')
-      .map(entry => Math.round(entry.phaseTime * 10))
+      .filter(entry => entry.kind === 'travel-start')
+      .map(entry => `${entry.pathogen}@${Math.round(entry.phaseTime * 10)}`)
       .join('|');
   };
   const a = run('seed-a');

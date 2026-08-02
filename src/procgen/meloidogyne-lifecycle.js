@@ -12,6 +12,22 @@ const hash = (p, s = 0) => {
 };
 const pointOnRoot = (p, x) => ({ x: clamp(x, p.x + 18, p.x + p.w - 18), y: p.y - 5 });
 
+/**
+ * VELOCIDADE-BASE DO J2, em px/s.
+ *
+ * É a velocidade com que um J2 recém-eclodido nada até a raiz (`seek`), e agora
+ * também a da chegada externa: um J2 que vem de fora não é uma espécie mais
+ * rápida, é o mesmo organismo vindo de mais longe. O número mora aqui e só
+ * aqui — o controlador de chegadas importa esta constante em vez de repetir
+ * 47 do outro lado.
+ */
+export const MELOIDOGYNE_BASE_SPEED = 47;
+
+// Quantos pedaços usar para medir o comprimento da trajetória curva. Com 18 o
+// erro contra uma integração fina fica abaixo de 1%, e é o que decide a duração
+// do percurso — medir a corda em vez da curva encurtaria a viagem.
+const ARRIVAL_PATH_SAMPLES = 18;
+
 export function createMeloidogyneLifecycle({ state, entities }) {
   const eggs = [], juveniles = [], galls = [];
   const rootGameplay = createRootHealthGameplay({ state, entities });
@@ -160,7 +176,7 @@ export function createMeloidogyneLifecycle({ state, entities }) {
   function introduceJ2Arrival({
     targetRoot = null, preferredRoot = null, x = null,
     originX = null, originY = null, count = null, source = 'arrival',
-    travelSeconds = null,
+    travelSpeed = null, transit = false,
   } = {}) {
     const root = preferredRoot || targetRoot || roots()[0];
     if (!root) return null;
@@ -178,9 +194,12 @@ export function createMeloidogyneLifecycle({ state, entities }) {
     );
     const spawnY = Number.isFinite(originY) ? originY : root.y + 26 + random() * 18;
     const wanted = Number.isInteger(count) ? count : 2 + Math.floor(random() * 2);
-    // Duração do TRAJETO. Zero (ou ausente) mantém o comportamento antigo: os
-    // J2 nascem já buscando, que é o que a eclosão de uma massa de ovos faz.
-    const travel = Number.isFinite(travelSeconds) && travelSeconds > 0 ? travelSeconds : 0;
+    // Aproximação visível: pedida explicitamente, ou implícita quando vem uma
+    // velocidade. Sem ela o comportamento antigo continua — os J2 nascem já
+    // buscando, que é o que a eclosão de uma massa de ovos faz.
+    const speedRequested = Number.isFinite(travelSpeed) && travelSpeed > 0 ? travelSpeed : null;
+    const inTransit = Boolean(transit || speedRequested);
+    const arrivalSpeed = speedRequested || MELOIDOGYNE_BASE_SPEED;
     const groupId = `melo-arrival-${arrivalCount}`;
     const created = [];
     for (let index = 0; index < wanted; index++) {
@@ -208,31 +227,94 @@ export function createMeloidogyneLifecycle({ state, entities }) {
         // --- APROXIMAÇÃO VISÍVEL ------------------------------------------
         // O J2 é o organismo real do ciclo desde a origem, mas até alcançar a
         // rizosfera ele está em TRÂNSITO: some do controle de `seek` e é o
-        // trajeto que manda nele. Sem esse estado ele nascia longe e nadava a
-        // 47 px/s — a chegada durava meia fase e não se via chegada nenhuma.
-        arrivalTransit: travel > 0,
-        arrivalGroupId: travel > 0 ? groupId : null,
+        // trajeto que manda nele.
+        //
+        // O trajeto NÃO tem cronômetro. Ele avança por DISTÂNCIA, à mesma
+        // velocidade-base de um J2 recém-eclodido: um percurso mais longo
+        // simplesmente demora mais. Com duração fixa, uma origem duas vezes
+        // mais distante dobrava a velocidade do organismo para caber no relógio
+        // — e a chegada deixava de parecer um nematoide nadando.
+        arrivalTransit: inTransit,
+        arrivalGroupId: inTransit ? groupId : null,
         arrivalProgress: 0,
-        arrivalDuration: travel,
+        arrivalSpeed,
+        arrivalTraveled: 0,
+        arrivalPathLength: 0,
         arrivalPreferredRoot: root,
+        arrivalCompleted: false,
+        arrivalIntercepted: false,
         // Diferenças individuais: cada um curva e ondula de um jeito, então o
-        // grupo chega junto sem chegar em fila.
+        // grupo chega junto sem chegar em fila — e cada um tem seu próprio
+        // comprimento de trajeto, logo sua própria duração.
         arrivalCurve: (random() - .5) * 150,
         arrivalWobble: .55 + random() * .9,
         arrivalPhase: random() * TAU,
         arrivalLead: index * .06 + random() * .05,
       };
+      if (inTransit) {
+        juvenile.arrivalPathLength = arrivalPathLength(juvenile, root);
+        juvenile.arrivalDuration = juvenile.arrivalPathLength / arrivalSpeed;
+      } else {
+        juvenile.arrivalDuration = 0;
+      }
       juveniles.push(juvenile);
       created.push(juvenile);
       entities.burst(juvenile.x, juvenile.y, '#e6d2a0', 6, 48);
     }
     if (!created.length) return null;
     expose();
+    const pathLength = created.reduce((sum, entry) => sum + entry.arrivalPathLength, 0)
+      / created.length;
     return {
       targetRoot: root, preferredRoot: root, x: spawnX,
-      originX: spawnX, originY: spawnY, groupId, travelSeconds: travel,
+      originX: spawnX, originY: spawnY, groupId,
+      transit: inTransit, speed: arrivalSpeed,
+      pathLength,
+      travelSeconds: inTransit ? pathLength / arrivalSpeed : 0,
       count: created.length, juveniles: created, source,
     };
+  }
+
+  /** Ponto da rizosfera para onde este J2 está indo, lido da raiz agora. */
+  function arrivalDestination(j, root) {
+    return {
+      x: clamp(root.x + root.w * (.3 + (j.arrivalLead || 0)), root.x + 14, root.x + root.w - 14),
+      y: root.y + 30,
+    };
+  }
+
+  /** Posição na trajetória, em `t` de 0 a 1. Uma função só, usada pelo
+   *  movimento e pela medição — se fossem duas, a distância medida seria de uma
+   *  curva e o organismo andaria por outra. */
+  function arrivalPointAt(j, destination, t) {
+    const arc = Math.sin(t * Math.PI);
+    return {
+      x: j.arrivalOriginX + (destination.x - j.arrivalOriginX) * t
+        + Math.sin(t * 5.5 + j.arrivalPhase) * 11 * (j.arrivalWobble || 1) * arc,
+      y: j.arrivalOriginY + (destination.y - j.arrivalOriginY) * t
+        + arc * (j.arrivalCurve || 0)
+        + Math.cos(t * 7.5 + j.arrivalPhase) * 9 * (j.arrivalWobble || 1) * arc,
+    };
+  }
+
+  /**
+   * Comprimento REAL da trajetória, somando os pedaços da curva.
+   *
+   * A corda entre origem e destino subestima o caminho: a curvatura e a
+   * ondulação acrescentam distância, e é essa distância que o organismo
+   * percorre. Medir a corda faria a viagem terminar antes do tempo, o que é
+   * outra forma de acelerar artificialmente.
+   */
+  function arrivalPathLength(j, root) {
+    const destination = arrivalDestination(j, root);
+    let total = 0;
+    let previous = arrivalPointAt(j, destination, 0);
+    for (let step = 1; step <= ARRIVAL_PATH_SAMPLES; step++) {
+      const point = arrivalPointAt(j, destination, step / ARRIVAL_PATH_SAMPLES);
+      total += Math.hypot(point.x - previous.x, point.y - previous.y);
+      previous = point;
+    }
+    return Math.max(1, total);
   }
 
   /**
@@ -252,26 +334,25 @@ export function createMeloidogyneLifecycle({ state, entities }) {
    */
   function updateArrivalTransit(j, dt) {
     const root = roots().includes(j.arrivalPreferredRoot) ? j.arrivalPreferredRoot : null;
-    const duration = Math.max(.35, j.arrivalDuration || 1);
-    j.arrivalProgress = clamp(j.arrivalProgress + dt / duration, 0, 1);
     if (!root) { releaseFromTransit(j, null); return; }
+
+    // Avanço por DISTÂNCIA: o organismo nada tantos pixels por segundo, e o
+    // progresso é quanto disso já cobriu o caminho. O comprimento é remedido a
+    // cada quadro porque a raiz pode se mover — se ela se afasta, o percurso
+    // fica mais longo e a viagem demora mais, que é o que aconteceria de fato.
+    j.arrivalTraveled += (j.arrivalSpeed || MELOIDOGYNE_BASE_SPEED) * dt;
+    j.arrivalPathLength = arrivalPathLength(j, root);
+    j.arrivalDuration = j.arrivalPathLength / (j.arrivalSpeed || MELOIDOGYNE_BASE_SPEED);
+    j.arrivalProgress = clamp(j.arrivalTraveled / j.arrivalPathLength, 0, 1);
 
     // A rizosfera, não a superfície: o J2 chega ao SOLO junto da raiz e só
     // depois procura o ponto de entrada.
-    const destinationX = clamp(
-      root.x + root.w * (.3 + (j.arrivalLead || 0)),
-      root.x + 14, root.x + root.w - 14,
-    );
-    const destinationY = root.y + 30;
-    const t = j.arrivalProgress;
-    const arc = Math.sin(t * Math.PI);
+    const destination = arrivalDestination(j, root);
     const previousX = j.x;
     const previousY = j.y;
-    j.x = j.arrivalOriginX + (destinationX - j.arrivalOriginX) * t
-      + Math.sin(t * 5.5 + j.arrivalPhase) * 11 * (j.arrivalWobble || 1) * arc;
-    j.y = j.arrivalOriginY + (destinationY - j.arrivalOriginY) * t
-      + arc * (j.arrivalCurve || 0)
-      + Math.cos(t * 7.5 + j.arrivalPhase) * 9 * (j.arrivalWobble || 1) * arc;
+    const point = arrivalPointAt(j, destination, j.arrivalProgress);
+    j.x = point.x;
+    j.y = point.y;
     // A velocidade sai do próprio deslocamento: é ela que orienta o desenho do
     // corpo, então precisa ser a real, não uma inventada.
     if (dt > 0) { j.vx = (j.x - previousX) / dt; j.vy = (j.y - previousY) / dt; }
@@ -279,14 +360,25 @@ export function createMeloidogyneLifecycle({ state, entities }) {
     if (j.arrivalProgress >= 1) releaseFromTransit(j, root);
   }
 
+  /** Distância que ainda falta, em pixels, para este J2 alcançar a rizosfera. */
+  function arrivalRemainingDistance(j) {
+    if (!j.arrivalTransit) return 0;
+    return Math.max(0, (j.arrivalPathLength || 0) - (j.arrivalTraveled || 0));
+  }
+
   /**
    * Fim do trajeto: o J2 vira um J2 comum. Nada de estado especial sobrando —
    * daqui em diante ele procura, penetra, migra e forma galha como qualquer
    * outro, e pode trocar de raiz se aparecer uma nuvem melhor.
+   *
+   * `arrivalCompleted` fica marcado porque é o que o controlador de chegadas lê
+   * para contabilizar: a chegada acontece AQUI, ao alcançar a rizosfera, e não
+   * lá atrás quando o grupo nasceu na origem.
    */
   function releaseFromTransit(j, root) {
     j.arrivalTransit = false;
     j.arrivalProgress = 1;
+    j.arrivalCompleted = Boolean(root);
     j.state = 'seeking';
     j.targetRoot = root || null;
     if (root) j.targetX = clamp(j.x, root.x + 12, root.x + root.w - 12);
@@ -295,6 +387,77 @@ export function createMeloidogyneLifecycle({ state, entities }) {
     j.retarget = .35 + Math.random() * .5;
     j.cooldown = 0;
     entities.burst(j.x, j.y, '#ffd9a8', 7, 52);
+  }
+
+  /**
+   * Encerra um grupo inteiro de uma vez, alcançando a rizosfera.
+   *
+   * Só o Phase Lab usa: "forçar chegada imediata" não pode ter um segundo
+   * caminho de código, então ela empurra o grupo até o fim do MESMO trajeto em
+   * vez de criar J2 já colados na raiz.
+   */
+  function releaseArrivalGroup(groupId) {
+    const group = juveniles.filter(j => j.arrivalGroupId === groupId && j.arrivalTransit);
+    for (const j of group) {
+      const root = roots().includes(j.arrivalPreferredRoot) ? j.arrivalPreferredRoot : null;
+      if (root) {
+        j.arrivalTraveled = j.arrivalPathLength = arrivalPathLength(j, root);
+        const destination = arrivalDestination(j, root);
+        const point = arrivalPointAt(j, destination, 1);
+        j.x = point.x;
+        j.y = point.y;
+      }
+      releaseFromTransit(j, root);
+    }
+    return group.length;
+  }
+
+  /** Retira do mundo os J2 de um grupo que ainda estejam em trânsito. */
+  function removeArrivalGroup(groupId) {
+    let removed = 0;
+    for (let index = juveniles.length - 1; index >= 0; index--) {
+      const j = juveniles[index];
+      if (j.arrivalGroupId !== groupId || !j.arrivalTransit) continue;
+      juveniles.splice(index, 1);
+      removed++;
+    }
+    if (removed) expose();
+    return removed;
+  }
+
+  /** Fotografia de um grupo em trânsito, para o controlador e o Phase Lab. */
+  function arrivalGroupSnapshot(groupId) {
+    const members = juveniles.filter(j => j.arrivalGroupId === groupId);
+    const transit = members.filter(j => j.arrivalTransit && j.alive);
+    const arrived = members.filter(j => j.arrivalCompleted);
+    const intercepted = members.filter(j => j.arrivalIntercepted);
+    const meanX = transit.length
+      ? transit.reduce((sum, j) => sum + j.x, 0) / transit.length : null;
+    const meanY = transit.length
+      ? transit.reduce((sum, j) => sum + j.y, 0) / transit.length : null;
+    const pathLength = transit.length
+      ? transit.reduce((sum, j) => sum + (j.arrivalPathLength || 0), 0) / transit.length : 0;
+    const traveled = transit.length
+      ? transit.reduce((sum, j) => sum + (j.arrivalTraveled || 0), 0) / transit.length : pathLength;
+    const remaining = transit.length
+      ? Math.min(...transit.map(arrivalRemainingDistance)) : 0;
+    const speed = transit.length
+      ? transit.reduce((sum, j) => sum + (j.arrivalSpeed || MELOIDOGYNE_BASE_SPEED), 0) / transit.length
+      : MELOIDOGYNE_BASE_SPEED;
+    return {
+      groupId,
+      memberCount: members.length,
+      transitCount: transit.length,
+      arrivedCount: arrived.length,
+      interceptedCount: intercepted.length,
+      meanX, meanY, pathLength, traveled, remaining, speed,
+      estimatedSecondsRemaining: remaining / Math.max(1e-6, speed),
+      // Nunca 100% antes de alguem alcancar: enquanto houver J2 em transito, o
+      // progresso e o do mais adiantado, e ele so chega a 1 quando chega mesmo.
+      progress: transit.length
+        ? clamp(Math.max(...transit.map(j => j.arrivalProgress || 0)), 0, .999)
+        : (arrived.length ? 1 : 0),
+    };
   }
 
   function updateEggs(dt) {
@@ -365,7 +528,7 @@ export function createMeloidogyneLifecycle({ state, entities }) {
     if (!j.targetRoot || !roots().includes(j.targetRoot) || j.retarget <= 0) { chooseRoot(j); j.retarget = 1.2 + Math.random() * 1.1; }
     if (!j.targetRoot) { j.x += j.vx * dt; j.y += j.vy * dt; return; }
     const q = pointOnRoot(j.targetRoot, j.targetX); j.targetX = q.x;
-    if (steer(j, q.x, q.y, dt, 47 + j.generation * 2.5) > 13 || j.cooldown > 0) return;
+    if (steer(j, q.x, q.y, dt, MELOIDOGYNE_BASE_SPEED + j.generation * 2.5) > 13 || j.cooldown > 0) return;
     if (occupancy(j.targetRoot) >= 2) { j.targetRoot = null; j.cooldown = 1.5; return; }
     const defense = bacillusDefense(j.targetRoot, q.x);
     if (defense > .58 && Math.random() < defense * .72) {
@@ -416,8 +579,9 @@ export function createMeloidogyneLifecycle({ state, entities }) {
         j.vx *= Math.pow(.02, dt);
         j.vy *= Math.pow(.02, dt);
         // Capturado a caminho: o trajeto acaba ali. Trichoderma pega J2 no solo,
-        // e o solo é exatamente onde ele está.
-        j.arrivalTransit = false;
+        // e o solo é exatamente onde ele está. Interceptado NÃO é chegada — o
+        // controlador conta grupos que alcançam a rizosfera, e este não alcançou.
+        if (j.arrivalTransit) { j.arrivalTransit = false; j.arrivalIntercepted = true; }
         continue;
       }
       // Em trânsito, o trajeto manda — e só ele. Nada de `seek`, nada de
@@ -656,6 +820,9 @@ export function createMeloidogyneLifecycle({ state, entities }) {
     get eggCount() { return eggs.reduce((s, m) => s + m.eggs, 0); },
     get juvenileCount() { return juveniles.filter(j => j.state === 'seeking').length; },
     get arrivalTransitCount() { return juveniles.filter(j => j.arrivalTransit).length; },
+    arrivalGroupSnapshot,
+    releaseArrivalGroup,
+    removeArrivalGroup,
     get penetratingCount() { return juveniles.filter(j => j.state !== 'seeking').length; },
     get gallCount() { return galls.length; },
     get matureGallCount() { return galls.filter(g => g.progress >= .5).length; },

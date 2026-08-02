@@ -1,5 +1,6 @@
 import { campaignManifest } from './campaign-manifest.js';
 import { createRandom } from './random.js';
+import { MELOIDOGYNE_BASE_SPEED } from './meloidogyne-lifecycle.js';
 import { PATHOGEN_PRESSURE_DEFAULTS } from './pathogen-pressure.js';
 
 // CHEGADAS DE PATÓGENO — etapa 2: quando e onde
@@ -42,9 +43,29 @@ export const PATHOGEN_ARRIVAL_DEFAULTS = Object.freeze({
   highMeanIntervalSeconds: 45,
   criticalMeanIntervalSeconds: 25,
   minimumCooldownSeconds: 20,
+  // `warningSeconds` continua sendo o percurso da RALSTONIA, e só dela: o
+  // inóculo é uma entidade abstrata do controlador e pode ter duração própria.
+  // A Meloidogyne saiu deste relógio — ver abaixo.
   warningSeconds: 5,
   maximumActiveThreats: 2,
   maximumActivePerPathogen: 1,
+
+  // --- MELOIDOGYNE ---------------------------------------------------------
+  //
+  // O J2 é um organismo, não um marcador, e nada à velocidade que um J2 nada.
+  // Com duração fixa, uma origem duas vezes mais distante dobrava a velocidade
+  // do bicho para caber no cronômetro. Agora a distância manda: percurso longo
+  // demora mais, e é o mesmo número que `seek` usa (importado, não repetido).
+  meloidogyneArrivalSpeed: MELOIDOGYNE_BASE_SPEED,
+  // A que distância da rizosfera o aviso começa. Na velocidade-base isso dá
+  // pouco mais de cinco segundos de reação — a mesma janela do relógio antigo,
+  // agora medida em espaço, que é o que o jogador enxerga.
+  meloidogyneWarningDistance: 250,
+  // Teto do percurso. A origem continua nascendo fora da tela, mas 47 px/s
+  // atravessando o mundo inteiro seria uma chegada de minutos: acima disto a
+  // origem é trocada pela borda mais próxima em vez de ser encurtada, porque
+  // encurtar a traria para dentro do enquadramento.
+  meloidogyneMaximumTravelSeconds: 14,
 });
 
 export const ARRIVAL_PATHOGENS = Object.freeze(['meloidogyne', 'ralstonia']);
@@ -394,6 +415,17 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
     return { ...origin, originX, originY };
   }
 
+  /**
+   * Distância máxima aceitável do percurso, em pixels.
+   *
+   * Só faz sentido para a Meloidogyne, porque só ela viaja a uma velocidade
+   * física. O inóculo da Ralstonia tem duração própria e não é afetado.
+   */
+  function maximumTravelDistance(pathogen) {
+    if (pathogen !== 'meloidogyne') return Infinity;
+    return config.meloidogyneArrivalSpeed * config.meloidogyneMaximumTravelSeconds;
+  }
+
   function selectOrigin(pathogen, targetRoot) {
     const random = createRandom(
       `${seedValue()}:arrival-origin:${pathogen}:n${totalArrivals}:a${attemptId()}`,
@@ -402,15 +434,17 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
     const margin = 140 + random() * 120;
     const targetX = targetRoot ? targetRoot.x + targetRoot.w / 2 : view.left + 200;
     const targetY = targetRoot ? targetRoot.y : view.bottom - 100;
+    const limit = maximumTravelDistance(pathogen);
 
     // A necrótica só entra se existir E estiver dentro do trecho visível, ou
-    // logo ao lado dele: um foco a seis telas de distância não é uma origem, é
-    // um número. Diferente das outras, esta é um lugar REAL — puxá-la para
-    // perto seria mentir sobre onde o tecido morto está, então ela é descartada
-    // em vez de deslocada.
+    // logo ao lado dele, E dentro do alcance do percurso. Diferente das outras,
+    // esta é um lugar REAL — puxá-la para perto seria mentir sobre onde o
+    // tecido morto está, então ela é DESCARTADA em vez de deslocada, e o
+    // sorteio cai em outra origem válida.
     const necrotic = necroticRoots().filter(root => {
       const center = root.x + root.w / 2;
-      return center > view.left - 400 && center < view.right + 400;
+      if (center <= view.left - 400 || center >= view.right + 400) return false;
+      return Math.hypot(center - targetX, root.y - targetY) <= limit;
     });
     const pool = necrotic.length ? ORIGIN_TYPES : ORIGIN_TYPES.filter(type => type !== 'necrotic');
     const type = pool[Math.floor(random() * pool.length) % pool.length];
@@ -436,7 +470,14 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
         originY: Math.max(targetY + 90, belowY),
       }, targetY);
     }
-    const fromLeft = type === 'left';
+    // Lateral longe demais: TROCA de lado em vez de encurtar. Encurtar traria a
+    // origem para dentro do enquadramento, e a origem tem de nascer fora dele —
+    // a borda mais próxima resolve as duas coisas.
+    let fromLeft = type === 'left';
+    const distanceFrom = side => Math.abs((side ? view.left - margin : view.right + margin) - targetX);
+    if (distanceFrom(fromLeft) > limit && distanceFrom(!fromLeft) < distanceFrom(fromLeft)) {
+      fromLeft = !fromLeft;
+    }
     return constrainOriginToView({
       originType: fromLeft ? 'left' : 'right',
       originX: fromLeft ? view.left - margin : view.right + margin,
@@ -613,20 +654,19 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
 
   /**
    * Começa o DESLOCAMENTO. O aviso deixou de ser um retângulo pontilhado: é o
-   * próprio patógeno atravessando o solo, da origem até a rizosfera, durante
-   * `warningSeconds`. O jogador vê a ameaça chegando e tem esse tempo para
-   * preparar ou reforçar a prevenção.
+   * próprio patógeno atravessando o solo, da origem até a rizosfera.
    *
-   * Os dois patógenos viajam de formas diferentes, e é isso que os torna
-   * reconhecíveis:
+   * Os dois viajam de formas diferentes, e é isso que os torna reconhecíveis —
+   * e também por que têm relógios diferentes:
    *
-   *   Meloidogyne — os J2 REAIS nascem na origem e nadam. Não há entidade
-   *   intermediária: eles já são o estágio inicial do ciclo, e por isso podem
-   *   trocar de raiz no meio do caminho se aparecer uma nuvem melhor.
+   *   Meloidogyne — os J2 REAIS nascem na origem e nadam a 47 px/s, a mesma
+   *   velocidade de um J2 recém-eclodido. Não há entidade intermediária: eles
+   *   já são o estágio inicial do ciclo. A duração sai da DISTÂNCIA, e a
+   *   chegada só é contabilizada quando alguém alcança a rizosfera.
    *
-   *   Ralstonia — um inóculo ambiental temporário, porque o foco superficial
-   *   só pode existir quando o inóculo CHEGA. Criar o foco na origem seria
-   *   colonizar a raiz de longe.
+   *   Ralstonia — um inóculo ambiental temporário com duração própria
+   *   (`warningSeconds`), porque o foco superficial só pode existir quando o
+   *   inóculo CHEGA. Criar o foco na origem seria colonizar a raiz de longe.
    */
   function beginWarning(pathogen, { tutorial = false, source = 'pressure', targetRoot = null } = {}) {
     const root = targetRoot || selectTargetRoot(pathogen);
@@ -669,16 +709,31 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
             originY: origin.originY,
             preferredRoot: root,
             source,
-            // A duração vem do PERCURSO, não da velocidade de busca do J2. Sem
-            // isto o grupo nascia a uma tela de distância e levava meia fase
-            // nadando a 47 px/s — a chegada existia nos dados e não na tela.
-            travelSeconds: config.warningSeconds,
+            // Velocidade, não duração. O ciclo mede a curva e deriva o tempo.
+            travelSpeed: config.meloidogyneArrivalSpeed,
           })
         : null;
-      warning.organisms = result?.juveniles ? [...result.juveniles] : [];
-      // A chegada da Meloidogyne se completa no nascimento: os J2 JÁ são o
-      // ciclo. O percurso continua sendo visível porque são eles que nadam.
-      countArrival(pathogen, { tutorial, source, root, travelling: true });
+      if (!result) { warning = null; return null; }
+      warning.organisms = [...result.juveniles];
+      warning.groupId = result.groupId;
+      warning.pathLength = result.pathLength;
+      warning.estimatedTravelSeconds = result.travelSeconds;
+      warning.timeRemaining = result.travelSeconds;
+      warning.speed = result.speed;
+      warning.warningTriggered = false;
+      warning.counted = false;
+      warning.groupState = 'travelling';
+      // Uma leitura ja na criacao: sem ela a primeira publicacao sai sem
+      // distancia, e o Phase Lab mostra o grupo "a 0px da raiz" no instante em
+      // que ele acabou de nascer do outro lado da tela.
+      updateMeloidogyneGroup();
+      // NÃO se conta nada aqui. Nascer não é chegar: a contagem acontece quando
+      // o primeiro J2 alcança a rizosfera, e um grupo inteiro capturado pelo
+      // Trichoderma no caminho nunca chega a ser uma chegada.
+      //
+      // O progresso do relógio compartilhado reinicia agora, senão ele já está
+      // acima do limiar e dispararia uma segunda chegada no quadro seguinte.
+      arrivalProgress = 0;
     } else {
       // Entidade temporária, publicada no nível para o renderizador desenhar.
       const inoculum = {
@@ -746,15 +801,96 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
     return { x, y };
   }
 
+  // --- ACOMPANHAMENTO DO GRUPO DE MELOIDOGYNE -------------------------------
+  //
+  // Nada de cronômetro aqui: o controlador só OBSERVA o que o ciclo faz com os
+  // J2. Ele decide duas coisas — quando avisar (por distância) e quando
+  // contabilizar (quando alguém chega de fato).
+
+  function meloidogyneSnapshot() {
+    if (!warning?.groupId) return null;
+    return systems.meloidogyneLifecycle?.arrivalGroupSnapshot?.(warning.groupId) || null;
+  }
+
+  /** Ponto da rizosfera da raiz preferida, agora. É contra ele que a distância
+   *  do grupo é medida — não contra o topo da raiz nem contra o centro dela. */
+  function rhizospherePoint(root) {
+    return { x: root.x + root.w * 0.4, y: root.y + 30 };
+  }
+
+  function updateMeloidogyneGroup() {
+    const snapshot = meloidogyneSnapshot();
+    if (!snapshot) return;
+    const root = warning.targetRoot;
+    warning.snapshot = snapshot;
+    warning.travelProgress = snapshot.progress;
+    warning.timeRemaining = snapshot.estimatedSecondsRemaining;
+    warning.estimatedTravelSeconds = snapshot.pathLength / Math.max(1e-6, snapshot.speed);
+
+    // Distância do grupo (posição média dos que ainda vêm) até a rizosfera.
+    const target = rhizospherePoint(root);
+    warning.distanceToRoot = snapshot.meanX === null
+      ? 0
+      : Math.hypot(snapshot.meanX - target.x, snapshot.meanY - target.y);
+
+    // AVISO POR PROXIMIDADE. Uma vez por chegada, e nunca na origem: enquanto o
+    // grupo está longe o próprio movimento já é o sinal, e um texto repetido a
+    // cada quadro viraria ruído em vez de aviso.
+    if (
+      !warning.warningTriggered
+      && snapshot.transitCount > 0
+      && warning.distanceToRoot <= config.meloidogyneWarningDistance
+    ) {
+      warning.warningTriggered = true;
+      warning.groupState = 'warning';
+      if (state) { state.toast = 'J2 aproximando-se da raiz'; state.toastTime = 3.5; }
+      record('warning', {
+        pathogen: 'meloidogyne',
+        logicIndex: root?.logicIndex ?? null,
+        distance: Math.round(warning.distanceToRoot),
+      });
+    }
+
+    // CHEGOU: pelo menos um J2 do grupo alcançou a rizosfera. Uma contagem por
+    // grupo, não uma por J2 — os outros continuam nadando e viram J2 comuns.
+    if (snapshot.arrivedCount > 0) {
+      if (!warning.counted) {
+        warning.counted = true;
+        countArrival('meloidogyne', {
+          tutorial: warning.tutorial, source: warning.source, root, travelling: true,
+        });
+      }
+      warning.groupState = 'arrived';
+      warning = null;
+      return;
+    }
+
+    // INTERCEPTADO: ninguém em trânsito e ninguém chegou. Sem contagem, sem
+    // cooldown — o jogador impediu a chegada, e cobrar o intervalo de uma
+    // chegada efetiva seria premiar o patógeno por ter fracassado.
+    if (snapshot.transitCount === 0) {
+      warning.groupState = 'intercepted';
+      record('intercepted', {
+        pathogen: 'meloidogyne',
+        logicIndex: root?.logicIndex ?? null,
+        capturados: snapshot.interceptedCount,
+        iniciais: snapshot.memberCount,
+      });
+      warning = null;
+    }
+  }
+
   function completeWarning() {
     if (!warning) return null;
     const { pathogen, targetRoot, tutorial, source } = warning;
     const targetX = targetRoot ? targetRoot.x + targetRoot.w / 2 : warning.targetX;
 
     if (pathogen === 'meloidogyne') {
-      // Os J2 já estão no mundo e já foram contados: o fim do percurso é só o
-      // fim do acompanhamento visual. Quem decide o resto é o ciclo deles.
-      warning = null;
+      // Não há "completar" por tempo: quem termina o percurso da Meloidogyne é
+      // o próprio J2 ao alcançar a rizosfera. Aqui só se empurra o grupo até
+      // lá — o Phase Lab usa isto para não esperar a travessia inteira.
+      systems.meloidogyneLifecycle?.releaseArrivalGroup?.(warning.groupId);
+      updateMeloidogyneGroup();
       publish();
       return true;
     }
@@ -801,6 +937,36 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
     }));
   }
 
+  /** Leitura do grupo em trânsito, para o Phase Lab. Tudo em px e px/s, para
+   *  poder ser conferido contra o que se vê na tela. */
+  function meloidogyneReading() {
+    if (!warning || warning.pathogen !== 'meloidogyne') return null;
+    const snapshot = warning.snapshot || meloidogyneSnapshot();
+    if (!snapshot) return null;
+    return {
+      groupId: snapshot.groupId,
+      initialCount: warning.organisms.length,
+      activeCount: snapshot.transitCount,
+      capturedCount: snapshot.interceptedCount,
+      arrivedCount: snapshot.arrivedCount,
+      meanX: snapshot.meanX,
+      meanY: snapshot.meanY,
+      totalDistance: snapshot.pathLength,
+      traveledDistance: snapshot.traveled,
+      remainingDistance: snapshot.remaining,
+      speed: snapshot.speed,
+      estimatedSecondsRemaining: snapshot.estimatedSecondsRemaining,
+      progress: snapshot.progress,
+      warningTriggered: Boolean(warning.warningTriggered),
+      warningDistance: config.meloidogyneWarningDistance,
+      distanceToRoot: warning.distanceToRoot ?? null,
+      targetLogicIndex: warning.targetRoot?.logicIndex ?? null,
+      originType: warning.originType,
+      state: warning.groupState || 'travelling',
+      counted: Boolean(warning.counted),
+    };
+  }
+
   function publish() {
     const active = activeByPathogen();
     const detail = intervalDetail();
@@ -837,8 +1003,16 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
             timeRemaining: warning.timeRemaining,
             source: warning.source,
             tutorial: warning.tutorial,
+            groupId: warning.groupId ?? null,
+            warningTriggered: warning.warningTriggered ?? null,
+            distanceToRoot: warning.distanceToRoot ?? null,
           }
         : null,
+      // O grupo de Meloidogyne, em detalhe. O progresso vem do DESLOCAMENTO
+      // real — distância percorrida sobre distância total — e não de um
+      // cronômetro, que era o que deixava a barra em 100% com os J2 ainda a
+      // meia tela da raiz.
+      meloidogyneArrival: meloidogyneReading(),
       candidateScores: {
         meloidogyne: candidateScores('meloidogyne'),
         ralstonia: candidateScores('ralstonia'),
@@ -862,6 +1036,16 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
   function update(dt = 0) {
     const step = Number(dt) || 0;
 
+    // MELOIDOGYNE — sem cronômetro. O controlador observa o grupo que o ciclo
+    // está movendo e decide só duas coisas: quando avisar e quando contabilizar.
+    if (warning?.pathogen === 'meloidogyne') {
+      updateMeloidogyneGroup();
+      return publish();
+    }
+
+    // RALSTONIA — duração própria, deslocamento próprio. Não foi desacelerada
+    // junto: o inóculo é uma entidade do controlador, não um organismo com
+    // velocidade de natação.
     if (warning) {
       warning.timeRemaining -= step;
       warning.travelProgress = clamp(
@@ -869,8 +1053,6 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
         0,
         1,
       );
-      // O inóculo da Ralstonia se move de verdade; os J2 da Meloidogyne se
-      // movem pelo próprio ciclo e não precisam ser empurrados daqui.
       for (const entry of warning.entities) {
         const point = travelPointAt({ ...warning, ...entry }, warning.travelProgress);
         entry.x = point.x;
@@ -926,24 +1108,33 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
     return started;
   }
 
+  /**
+   * Cancela o que ainda está a caminho — e só isso.
+   *
+   * Nenhum contador se mexe e nenhum cooldown começa: cancelar não é uma
+   * chegada, é o desfazer de uma que não aconteceu. Depois que o grupo alcança
+   * a rizosfera ele deixa de ser cancelável, porque nesse momento `warning` já
+   * foi encerrado e os J2 viraram J2 comuns — retirá-los seria apagar
+   * organismos do mundo, não cancelar um percurso.
+   */
   function cancelWarning() {
     if (!warning) return false;
-    record('warning-cancelled', { pathogen: warning.pathogen });
+    record('cancelled', {
+      pathogen: warning.pathogen,
+      logicIndex: warning.targetRoot?.logicIndex ?? null,
+      groupId: warning.groupId ?? null,
+    });
     // O inóculo em trânsito some junto: cancelar o percurso e deixar a
     // entidade no mundo seria um patógeno órfão nadando para sempre.
     if (warning.entities.length && state?.level) {
       state.level.ralstoniaTravelInoculum = (state.level.ralstoniaTravelInoculum || [])
         .filter(entry => !warning.entities.includes(entry));
     }
-    // Os J2 desta chegada também saem. Eles são reais e já estão no solo, então
-    // "cancelar" só quer dizer alguma coisa se eles forem retirados — senão o
-    // botão do Lab pararia o acompanhamento e deixaria a ameaça de pé.
-    const juveniles = systems.meloidogyneLifecycle?.juveniles;
-    if (warning.organisms.length && Array.isArray(juveniles)) {
-      for (const organism of warning.organisms) {
-        const index = juveniles.indexOf(organism);
-        if (index >= 0) juveniles.splice(index, 1);
-      }
+    // Só os J2 DAQUELE grupo, pelo `arrivalGroupId`. Uma varredura por
+    // referência apagaria também J2 que já tivessem sido liberados e estivessem
+    // buscando por conta própria.
+    if (warning.groupId) {
+      systems.meloidogyneLifecycle?.removeArrivalGroup?.(warning.groupId);
     }
     warning = null;
     publish();
