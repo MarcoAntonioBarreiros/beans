@@ -18,6 +18,7 @@ import {
   attachTransportRoot,
   createPhosphateDepositAt,
   createPhosphateSolubilization,
+  finalizePhosphateStockCapacity,
   findTransportRootFor,
   isColonizableTransportRoot,
 } from '../src/procgen/phosphate-solubilization.js';
@@ -35,7 +36,13 @@ import {
 } from '../src/procgen/mycorrhiza-bridge-feasibility.js';
 import { evaluatePropulsionCrossing } from '../src/procgen/propulsion-feasibility.js';
 import { generateCampaignEncounters } from '../src/procgen/campaign-encounters.js';
-import { generateLevel } from '../src/procgen/generator.js';
+import { auditTraversableRoute, generateLevel } from '../src/procgen/generator.js';
+import { generateUnderdevelopedNitrogenRoots } from '../src/procgen/nitrogen-root.js';
+import {
+  auditPlatformOccupancy,
+  canTakeRole,
+  findFreeSlot,
+} from '../src/procgen/platform-occupancy.js';
 
 // PACOTE DE CORREÇÃO DE GERAÇÃO E PREVENÇÃO DE SOFTLOCK
 // =====================================================
@@ -182,6 +189,9 @@ test('6-9. transporte real: pool → raiz → rootPhosphateStock → HUD acima d
   const phosphate = createPhosphateSolubilization({
     state, entities: { burst() {}, damagePlayer() {} }, inoculants: mycorrhiza,
   });
+  // Capacidade mineral finalizada, como no fim do pipeline: e ela o denominador
+  // da barra desde a correcao.
+  finalizePhosphateStockCapacity(level);
   // Solubilização já feita: a poça existe, é o transporte que se está medindo.
   level.availablePhosphatePools.push({
     depositId: deposit.id, x: deposit.x + deposit.w / 2, y: deposit.y + deposit.h,
@@ -625,3 +635,182 @@ function readSource(relativePath) {
   }
   return sourceCache.get(relativePath);
 }
+
+// ---------------------------------------------------------------------------
+// A REGRA AMPLA SAIU DA AUDITORIA (§10, §11)
+// ---------------------------------------------------------------------------
+//
+// `auditTraversableRoute` aceitava QUALQUER vão impossível a partir da fase 4
+// porque a habilidade existia em algum lugar da fase. A pergunta passou a ser
+// sobre a travessia, não sobre a ficha de habilidades.
+//
+// A remoção foi feita depois de medir, como o enunciado pede: 50 seeds de
+// campanha e 50 do Lab não tinham nenhuma aceitação frouxa, e nada no pipeline
+// reage a `ordinaryFailures` inserindo geometria — `enforceTraversableRoute` foi
+// removida e `insertDebugSafetySteps` nunca é chamada fora do Lab. O relatório
+// da auditoria é diagnóstico, não entrada de gerador.
+
+function auditScene({ gap, rise = 0, withMycorrhiza = true }) {
+  const a = { id: 'a', logicIndex: 0, x: 0, y: 500, w: 200, h: 54, type: 'root' };
+  const b = {
+    id: 'b', logicIndex: 1, x: 200 + gap, y: 500 - rise, w: 200, h: 54, type: 'root',
+  };
+  return {
+    platforms: [a, b],
+    primitives: [
+      { id: 'jump', requires: [] },
+      { id: 'double-jump', requires: ['doubleJump'] },
+      { id: 'dash-jump', requires: ['dash'] },
+    ],
+    microbeEncounters: withMycorrhiza ? [{ id: 'myco', logicIndex: 0 }] : [],
+    exudates: withMycorrhiza ? [{ logicIndex: 0 }] : [],
+  };
+}
+
+test('40. um vão largo demais não é mais aceito só porque há micorriza na fase', () => {
+  // 900px: nenhuma ponte cobre isso — `buildBridgeGeometry` sustenta até 464px.
+  const level = auditScene({ gap: 900 });
+  const audit = auditTraversableRoute(level, { doubleJump: true, dash: true }, {
+    mycorrhizaStructuresAvailable: true,
+  });
+  assert.equal(audit.intentionalCrossings.length, 0, 'o vão impossível foi aceito');
+  assert.equal(audit.ordinaryFailures.length, 1);
+  assert.equal(audit.ordinaryFailures[0].reason, 'bridge-not-feasible');
+  assert.equal(audit.ordinaryFailures[0].detail, 'vao-longo-demais');
+});
+
+test('41. um vão realmente conectável por ponte continua aceito', () => {
+  const level = auditScene({ gap: 400 });
+  const audit = auditTraversableRoute(level, { doubleJump: true, dash: true }, {
+    mycorrhizaStructuresAvailable: true,
+  });
+  assert.equal(audit.ordinaryFailures.length, 0, audit.ordinaryFailures[0]?.detail);
+  assert.equal(audit.intentionalCrossings[0].reason, 'bridge-feasible');
+  assert.equal(audit.intentionalCrossings[0].mechanic, 'mycorrhizaBridge');
+});
+
+test('42. sem micorriza apresentada antes do vão, a ponte não conta', () => {
+  // Habilidade destravada no papel e organismo inalcançável no chão não
+  // atravessam nada. Este era o buraco mais fácil de cair.
+  const level = auditScene({ gap: 400, withMycorrhiza: false });
+  const audit = auditTraversableRoute(level, { doubleJump: true, dash: true }, {
+    mycorrhizaStructuresAvailable: true,
+  });
+  assert.equal(audit.intentionalCrossings.length, 0);
+  assert.equal(audit.ordinaryFailures[0].reason, 'bridge-prerequisite-missing');
+  assert.equal(audit.ordinaryFailures[0].detail, 'micorriza-nao-apresentada');
+});
+
+test('43. a propulsão não aprova mais qualquer vão', () => {
+  const level = auditScene({ gap: 1400 });
+  const audit = auditTraversableRoute(level, { doubleJump: true, dash: true }, {
+    jetpackAvailable: true,
+  });
+  assert.equal(audit.intentionalCrossings.length, 0, 'o vão impossível passou por propulsão');
+  assert.equal(audit.ordinaryFailures[0].reason, 'propulsion-not-feasible');
+});
+
+test('44. uma travessia dentro do alcance da propulsão continua aceita', () => {
+  // 550px: o dash nao cobre (teto ~480), mas o voo cobre. E exatamente o caso
+  // que a regra ampla existia para nao reprovar — e que continua passando.
+  const level = auditScene({ gap: 550 });
+  const audit = auditTraversableRoute(level, { doubleJump: true, dash: true }, {
+    jetpackAvailable: true,
+  });
+  assert.equal(audit.ordinaryFailures.length, 0, audit.ordinaryFailures[0]?.detail);
+  assert.equal(audit.intentionalCrossings[0].reason, 'propulsion-feasible');
+});
+
+test('45. a aceitação por flag global não existe mais no gerador', () => {
+  const source = stripComments(readSource('src/procgen/generator.js'));
+  assert.ok(
+    !/reason:\s*'bridgeableByPlayer'/.test(source),
+    'a aceitação ampla da micorriza voltou',
+  );
+  assert.ok(
+    !/reason:\s*'passableWithPropulsion'/.test(source),
+    'a aceitação ampla da propulsão voltou',
+  );
+  // E nada no pipeline reage a falha inserindo geometria — era esta a premissa
+  // que tornava a troca segura, e ela fica trancada aqui.
+  const app = stripComments(readSource('src/procgen/app.js'));
+  assert.ok(!/enforceTraversableRoute\(/.test(app), 'voltou a inserir degrau em falha');
+  assert.ok(!/insertDebugSafetySteps\(/.test(app), 'o inseridor de debug entrou no pipeline');
+});
+
+// ---------------------------------------------------------------------------
+// REGISTRO DE OCUPAÇÃO DE PLATAFORMA (§12)
+// ---------------------------------------------------------------------------
+
+test('46. funções compatíveis podem se acumular na mesma plataforma', () => {
+  // Acumular papel é normal. O registro existe para barrar o que não convive,
+  // não para espalhar desafios por precaução.
+  const platform = { logicIndex: 3, type: 'root', ascentGateHost: true };
+  assert.equal(canTakeRole(platform, 'raiz-transportadora').ok, true);
+  assert.equal(auditPlatformOccupancy({ platforms: [platform] }).length, 0);
+});
+
+test('47. o alvo da FBN não pode ser destino de escada nem de ponte', () => {
+  for (const key of ['ascentGate', 'bridgeGate']) {
+    const platform = { logicIndex: 4, type: 'root', [key]: true };
+    const verdict = canTakeRole(platform, 'alvo-fbn');
+    assert.equal(verdict.ok, false, `${key} aceitou virar alvo da FBN`);
+    assert.ok(verdict.reason.includes('nodulacao'));
+  }
+});
+
+test('48. o alvo da FBN não pode ser a raiz transportadora do fósforo', () => {
+  // O alvo é removido até a nodulação: o depósito ficaria sem transporte no
+  // meio da fase, e o jogador sem entender por que o fósforo parou.
+  const platform = { logicIndex: 5, type: 'root', phosphateTransportRoot: true };
+  assert.equal(canTakeRole(platform, 'alvo-fbn').ok, false);
+});
+
+test('49. a raiz final não recebe portão nenhum', () => {
+  const platform = { logicIndex: 9, type: 'root', final: true };
+  for (const role of ['destino-escada', 'destino-ponte', 'host-ponte', 'host-parede-fosforo']) {
+    assert.equal(canTakeRole(platform, role).ok, false, `${role} foi aceito na raiz final`);
+  }
+});
+
+test('50. o conflito é detectado quando já existe no nível', () => {
+  const level = {
+    platforms: [{ logicIndex: 2, type: 'root', nitrogenGate: 'target', bridgeGate: true }],
+  };
+  const conflicts = auditPlatformOccupancy(level);
+  assert.equal(conflicts.length, 1);
+  assert.deepEqual(conflicts[0].roles.sort(), ['alvo-fbn', 'destino-ponte']);
+});
+
+test('51. a escolha de outro slot é determinística e não sorteia nada', () => {
+  const candidates = [
+    { platform: { logicIndex: 1, type: 'root', bridgeGate: true } },
+    { platform: { logicIndex: 2, type: 'root', final: true } },
+    { platform: { logicIndex: 3, type: 'root' } },
+    { platform: { logicIndex: 4, type: 'root' } },
+  ];
+  const first = findFreeSlot(candidates, 'alvo-fbn');
+  assert.equal(first.platform.logicIndex, 3, 'não pegou o primeiro slot livre em ordem');
+  assert.equal(findFreeSlot(candidates, 'alvo-fbn'), first, 'a escolha variou entre chamadas');
+});
+
+test('52. a FBN da campanha nunca escolhe alvo com função incompatível', () => {
+  for (let index = 1; index <= 12; index++) {
+    const seed = `fbn-conflito-${index}`;
+    const level = generateLevel(seed, {
+      verticalPlan: { gateKinds: ['azospirillumAscent', 'mycorrhizaBridge', 'nitrogenRootGate'] },
+    });
+    const encounters = generateCampaignEncounters({
+      platforms: level.platforms, phase: 10, seedValue: seed,
+    });
+    level.microbeEncounters = encounters;
+    generateUnderdevelopedNitrogenRoots({
+      level, phase: 10, seedValue: seed, encounters,
+      config: getPhaseManifest(10)?.nitrogenRoot,
+    });
+    assert.deepEqual(
+      auditPlatformOccupancy(level), [],
+      `seed ${seed} produziu plataforma com funções incompatíveis`,
+    );
+  }
+});

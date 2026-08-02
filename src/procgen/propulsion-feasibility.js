@@ -20,6 +20,18 @@ import { JETPACK_CONFIG } from '../player-jetpack.js';
 export const GAME_GRAVITY = 1180;
 
 /**
+ * Velocidade horizontal do JOGADOR em voo, de `physics.js`.
+ *
+ * `JETPACK_CONFIG.maximumHorizontalSpeed` (185) NÃO serve aqui: aquele é o teto
+ * do empuxo lateral da própria mochila, não a velocidade com que o jogador
+ * atravessa o vão. Quem cruza o buraco é a corrida — o jogador entra no vão a
+ * 660 px/s e a mochila estende o TEMPO DE VOO. Usar 185 subestimava o alcance
+ * em mais de três vezes e reprovava travessias que qualquer playtest passa; é o
+ * erro espelhado da regra antiga, que aprovava tudo.
+ */
+export const PLAYER_AIR_SPEED = 660;
+
+/**
  * Alcance da propulsão a partir de um ponto, com o tanque que o jogador tem.
  *
  * Horizontal: velocidade de cruzeiro × tempo de voo. O tempo de voo é o tanque
@@ -45,7 +57,8 @@ export function propulsionEnvelope({ energy = 1, fallHeight = 0 } = {}) {
   // destino está mais baixo. `fallHeight` é o quanto se pode perder de altura.
   const glide = fallHeight > 0 ? Math.sqrt((2 * fallHeight) / GAME_GRAVITY) : 0;
   const flightSeconds = tank + glide;
-  const maximumHorizontal = JETPACK_CONFIG.maximumHorizontalSpeed * flightSeconds;
+  // A corrida cobre a distancia; a mochila compra o tempo.
+  const maximumHorizontal = PLAYER_AIR_SPEED * flightSeconds;
 
   return { tank, maximumRise, maximumHorizontal, flightSeconds };
 }
@@ -92,7 +105,7 @@ export function evaluatePropulsionCrossing({
   // vão que passa em cada eixo isolado passaria também na diagonal, e não passa.
   if (rise > 0) {
     const secondsClimbing = rise / Math.max(1, JETPACK_CONFIG.maximumJetpackAscentSpeed);
-    const secondsAdvancing = horizontalNeeded / Math.max(1, JETPACK_CONFIG.maximumHorizontalSpeed);
+    const secondsAdvancing = horizontalNeeded / Math.max(1, PLAYER_AIR_SPEED);
     if (secondsClimbing + secondsAdvancing > envelope.flightSeconds * 1.15) {
       return fail('tanque-insuficiente-para-subir-e-avancar', {
         needed: Number((secondsClimbing + secondsAdvancing).toFixed(2)),

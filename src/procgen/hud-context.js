@@ -2,20 +2,34 @@ import { getPhaseManifest, PHOSPHATE_SOLUBILIZATION_DEFAULTS } from './campaign-
 import { getNitrogenAvailability } from './nitrogen-availability.js';
 
 /**
- * Capacidade de referência da barra de fósforo.
+ * MÍNIMO DO OBJETIVO da fase — e só isso.
  *
- * É o mesmo `minimumTransportedPhosphate` que fecha o objetivo da fase, então
- * 100% na barra quer dizer "a raiz já tem o que a fase pede" — e não um número
- * bonito escolhido para a barra encher. Lido do manifesto da fase, com o padrão
- * como reserva, porque uma fase pode exigir mais que a outra.
+ * `minimumTransportedPhosphate` já foi usado como denominador da barra, e era o
+ * número errado: ele é a nota de corte do objetivo (0,65), não a reserva que a
+ * fase tem. Numa fase com quatro depósitos de 1 unidade, transportar o primeiro
+ * marcava 100% — o indicador dizia "cheio" com três quartos do fósforo ainda na
+ * rocha. Continua exportado porque a condição do objetivo é dele, e continua
+ * inalterado; o que mudou é que a BARRA parou de usá-lo.
  */
-export function phosphateHudCapacity(phase) {
+export function phosphateObjectiveMinimum(phase) {
   const manifest = getPhaseManifest(phase);
   const minimum = manifest?.phosphateSolubilization?.minimumTransportedPhosphate;
-  const capacity = Number.isFinite(minimum) && minimum > 0
+  return Number.isFinite(minimum) && minimum > 0
     ? minimum
     : PHOSPHATE_SOLUBILIZATION_DEFAULTS.minimumTransportedPhosphate;
-  return Math.max(0.01, capacity);
+}
+
+/**
+ * Denominador da barra: a reserva mineral REAL desta tentativa da fase.
+ *
+ * Calculada uma vez no fim da geração (`finalizePhosphateStockCapacity`) e
+ * congelada — solubilizar, esvaziar poça ou quebrar o depósito não a reduzem,
+ * porque ela é quanto fósforo a fase TINHA. Zero significa fase sem depósito
+ * funcional, e aí o indicador some em vez de dividir por zero.
+ */
+export function phosphateHudCapacity(level) {
+  const capacity = Number(level?.phosphateStockCapacity);
+  return Number.isFinite(capacity) && capacity > 0 ? capacity : 0;
 }
 
 if (typeof window !== 'undefined') {
@@ -194,10 +208,11 @@ export function updateContextPanel(state, nearbyRoot, contextDiv, sim) {
     // então esvaziar o pool do solo não zera o indicador — o fósforo saiu do
     // solo e entrou na raiz, que é exatamente o que a fase ensina.
     const rootPhosphate = sim.phosphateSolubilization?.rootPhosphateStock || 0;
-    if (phase >= 7 || rootPhosphate > 0) {
-      // Capacidade de referência: o mesmo mínimo que fecha o objetivo, lido do
-      // manifesto da fase. Nada de máximo inventado só para o HUD.
-      const pPct = Math.min(100, (rootPhosphate / phosphateHudCapacity(phase)) * 100);
+    const phosphateCapacity = phosphateHudCapacity(s.level);
+    // Sem depósito funcional na fase não há reserva a mostrar — e não se divide
+    // por zero para descobrir isso.
+    if (phosphateCapacity > 0 && (phase >= 7 || rootPhosphate > 0)) {
+      const pPct = Math.max(0, Math.min(100, (rootPhosphate / phosphateCapacity) * 100));
       html += `
         <div class="context-item">
           <span>Fósforo na raiz (P): <strong>${Math.round(pPct)}%</strong></span>

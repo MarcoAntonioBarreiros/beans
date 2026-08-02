@@ -10,6 +10,8 @@ import { generateLogicGraph } from './logic.js';
 import { generatePrimitives } from './primitives.js';
 import { generateGeometry } from './geometry.js';
 import { validateChunk } from './agents.js';
+import { evaluateMycorrhizaBridgeCandidate } from './mycorrhiza-bridge-feasibility.js';
+import { evaluatePropulsionCrossing } from './propulsion-feasibility.js';
 import { getTraversalEncounterTemplate } from './traversal-encounter-templates.js';
 import { selectTraversalEncounters } from './traversal-encounter-selector.js';
 import { validateTraversalEncounter } from './traversal-encounter-validator.js';
@@ -1102,6 +1104,32 @@ export function isIntentionalDynamicCrossing(level, previous, next) {
 // (`safetyStep`) dentro de qualquer vão que a física julgasse impossível — e por
 // isso preenchia justamente os portões intencionais, como o da raiz nitrogenada
 // subdesenvolvida da fase 2.
+/**
+ * A micorriza pode ter sido inoculada ANTES deste ponto da rota?
+ *
+ * Duas condições, e as duas são de chão, não de ficha de habilidades: o
+ * organismo tem de ter sido apresentado, e tem de haver exsudato para
+ * inoculá-lo. É o mesmo critério que `preventionAvailableFrom` usa para a
+ * Ralstonia — reusado em vez de reinventado.
+ */
+function mycorrhizaPrerequisiteAt(level, logicIndex) {
+  const encounter = (level?.microbeEncounters || [])
+    .filter(entry => entry.id === 'myco' && Number.isInteger(entry.logicIndex))
+    .map(entry => entry.logicIndex)
+    .sort((left, right) => left - right)[0];
+  if (!Number.isInteger(encounter)) {
+    return { ok: false, reason: 'micorriza-nao-apresentada' };
+  }
+  if (encounter > logicIndex) return { ok: false, reason: 'micorriza-apresentada-depois-do-vao' };
+  const exudate = (level?.exudates || [])
+    .filter(entry => Number.isInteger(entry.logicIndex) && entry.logicIndex >= encounter)
+    .map(entry => entry.logicIndex)
+    .sort((left, right) => left - right)[0];
+  if (!Number.isInteger(exudate)) return { ok: false, reason: 'sem-exsudato-para-inocular' };
+  if (exudate > logicIndex) return { ok: false, reason: 'exsudato-so-depois-do-vao' };
+  return { ok: true, reason: null };
+}
+
 export function auditTraversableRoute(level, abilities = {}, options = {}) {
   const result = { ordinaryFailures: [], intentionalCrossings: [], warnings: [] };
   const prims = executablePrimitives(level, abilities);
@@ -1152,23 +1180,68 @@ export function auditTraversableRoute(level, abilities = {}, options = {}) {
     // As primitivas cobrem salto, salto duplo e dash. Mas a partir da fase 4 o
     // jogador constrói PONTES MICORRÍZICAS sobre vãos, e a partir da fase 5 tem a
     // Propulsão da Rizósfera. Um vão pensado para uma dessas duas é lido como
-    // impossível por uma checagem que só conhece pulos — e era esse falso
-    // negativo que a rotina antiga "resolvia" enfiando um degrau no meio.
+    // impossível por uma checagem que só conhece pulos.
+    //
+    // Aqui existiam duas linhas que aceitavam QUALQUER vão impossível:
+    //
+    //     if (options.mycorrhizaStructuresAvailable) { aceitar; }
+    //     if (options.jetpackAvailable) { aceitar; }
+    //
+    // Isso é uma afirmação sobre a FASE, não sobre o vão. Um vão de 900px cuja
+    // margem de partida é solo — onde micorriza nenhuma se instala — era
+    // "atravessável por ponte" só porque a habilidade existe em algum lugar da
+    // fase. E um vão além do tanque da mochila era "atravessável por propulsão"
+    // pelo mesmo motivo. Softlock com carimbo de aprovado.
+    //
+    // A pergunta passa a ser sobre a TRAVESSIA: esta ponte é construível, esta
+    // propulsão alcança. As regras vêm dos validadores compartilhados, que são
+    // os mesmos que o runtime e a auditoria de seeds usam.
     if (options.mycorrhizaStructuresAvailable) {
-      result.intentionalCrossings.push({
+      const verdict = evaluateMycorrhizaBridgeCandidate({
+        level, source: previous, target: next,
+      });
+      // Pré-requisito é parte da viabilidade: habilidade destravada no papel e
+      // organismo inalcançável no chão não atravessam nada. Sem micorriza
+      // apresentada e sem exsudato ANTES do vão, não há ponte a construir.
+      const prerequisite = mycorrhizaPrerequisiteAt(level, previous.logicIndex);
+      if (verdict.feasible && prerequisite.ok) {
+        result.intentionalCrossings.push({
+          ...base,
+          reason: 'bridge-feasible',
+          mechanic: 'mycorrhizaBridge',
+          expectedBlockedUntilDeveloped: true,
+          gap: verdict.gap,
+          verticalDelta: verdict.dy,
+        });
+        continue;
+      }
+      result.ordinaryFailures.push({
         ...base,
-        reason: 'bridgeableByPlayer',
+        reason: verdict.feasible ? 'bridge-prerequisite-missing' : 'bridge-not-feasible',
         mechanic: 'mycorrhizaBridge',
-        expectedBlockedUntilDeveloped: true,
+        detail: verdict.feasible ? prerequisite.reason : verdict.reason,
       });
       continue;
     }
     if (options.jetpackAvailable) {
-      result.intentionalCrossings.push({
+      const verdict = evaluatePropulsionCrossing({
+        from: previous, to: next, unlocks: { jetpack: true },
+      });
+      if (verdict.feasible) {
+        result.intentionalCrossings.push({
+          ...base,
+          reason: 'propulsion-feasible',
+          mechanic: 'jetpack',
+          expectedBlockedUntilDeveloped: false,
+          rise: verdict.rise,
+        });
+        continue;
+      }
+      result.ordinaryFailures.push({
         ...base,
-        reason: 'passableWithPropulsion',
+        reason: 'propulsion-not-feasible',
         mechanic: 'jetpack',
-        expectedBlockedUntilDeveloped: false,
+        detail: verdict.reason,
       });
       continue;
     }

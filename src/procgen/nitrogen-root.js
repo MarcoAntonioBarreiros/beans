@@ -1,3 +1,4 @@
+import { canTakeRole } from './platform-occupancy.js';
 import { W } from '../core/constants.js';
 import { fxLanded } from '../game-audio.js';
 import { createRandom } from './random.js';
@@ -107,7 +108,15 @@ function routeGapCandidates(level, encounters, route, firstExudate, allowPromoti
       !colonizableRoot(targetPlatform, allowPromotion)
       || hasCriticalContent(level, encounters, targetPlatform, allowPromotion)
     ) continue;
-
+    // O alvo da FBN nasce SUBDESENVOLVIDO: ele so passa a existir depois de o
+    // jogador nodular o hospedeiro. Uma plataforma que ja e destino de escada,
+    // destino de ponte ou origem de outro portao nao pode assumir esse papel —
+    // o outro desafio passaria a apontar para algo que ainda nao esta la, e o
+    // vao fica sem solucao ate a nodulacao acontecer.
+    //
+    // O laco ja percorre a rota em ordem, entao pular este candidato E a
+    // escolha deterministica de outro slot: nenhum sorteio novo, nenhum RNG.
+    if (!canTakeRole(targetPlatform, 'alvo-fbn').ok) continue;
     const leftPlatform = route[routeIndex - 1];
     const rightPlatform = route[routeIndex + 1];
     // The source of the FBN must be visually unambiguous: the colonizable root

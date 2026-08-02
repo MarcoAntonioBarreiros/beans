@@ -18,6 +18,7 @@ import { applyPhaseSixTutorialEncounters, applyPhaseSixTutorialGeometry } from '
 import {
   applyPhaseSevenPhosphateGeometry,
   createPhosphateDepositAt,
+  finalizePhosphateStockCapacity,
 } from './phosphate-solubilization.js';
 import { createPhaseTenOptionalDetour } from './optional-detour-composer.js';
 import { createPhaseTenTopologyDetour } from './optional-detour-topology-synthesizer.js';
@@ -1103,6 +1104,18 @@ function prepareLevel() {
   installFinalGoal(levelData);
   applyInitialRootHealth(levelData, campaign.phase);
   synchronizeWorldBounds(levelData);
+  // CAPACIDADE MINERAL DA FASE, uma vez, no fim.
+  //
+  // Depois de TUDO que pode criar ou remover deposito: desafio autoral, portoes
+  // de fosfato da fase 10, recursos do Phase Lab, reparos e conversao de
+  // portoes. Calcular antes daria um denominador que ainda ia mudar.
+  //
+  // Congelada para esta tentativa: `remainingPhosphate` cai, o cristal para de
+  // ser desenhado, o pool esvazia — e a capacidade continua a mesma, porque ela
+  // e quanto fosforo a fase TINHA, nao quanto ainda resta. Morte e checkpoint
+  // nao passam por aqui (`respawn` nao reconstroi o nivel), entao a capacidade
+  // sobrevive ao respawn e so e recalculada numa reconstrucao completa.
+  finalizePhosphateStockCapacity(levelData);
   // Pesos da pressao de patogenos: o painel manda, como em tudo o mais do Lab.
   if (phaseLab.enabled && phaseLab.config?.pathogenPressure) {
     sim.pathogenPressure?.configure(phaseLab.config.pathogenPressure);

@@ -39,6 +39,42 @@ export function isColonizableTransportRoot(platform) {
 }
 
 /**
+ * CAPACIDADE MINERAL DA FASE — a reserva total que existe para ser transportada.
+ *
+ * O HUD dividia o estoque por `minimumTransportedPhosphate`, que é o MÍNIMO DO
+ * OBJETIVO (0,65), não a reserva da fase. Numa fase com quatro depósitos de 1
+ * unidade, transportar o primeiro já marcava 100% — o indicador dizia "cheio"
+ * com três quartos do fósforo ainda na rocha.
+ *
+ * Aqui a capacidade é a soma real: `initialPhosphate` de cada depósito
+ * funcional, contado UMA VEZ. `crystals` e `phosphateDeposits` apontam para a
+ * mesma instância de propósito, então somar as duas coleções dobraria tudo — é
+ * por isso que só `phosphateDeposits` é percorrida, e ainda assim com `Set`.
+ *
+ * Roda no FIM da geração, uma vez. Não pode rodar dentro de
+ * `createPhosphateDepositAt`: naquele momento os depósitos seguintes ainda não
+ * existem, e o Phase Lab nem chegou a aplicar os dele.
+ */
+export function finalizePhosphateStockCapacity(level) {
+  const seen = new Set();
+  let capacity = 0;
+  for (const deposit of level?.phosphateDeposits || []) {
+    if (!deposit || seen.has(deposit)) continue;
+    seen.add(deposit);
+    const initial = Number(deposit.initialPhosphate);
+    // Depósito decorativo, quebrado na geração ou sem reserva declarada não é
+    // capacidade: ele nunca vai entregar fósforo nenhum.
+    if (!Number.isFinite(initial) || initial <= 0) continue;
+    capacity += initial;
+  }
+  if (level) {
+    level.phosphateStockCapacity = capacity;
+    level.phosphateDepositCount = seen.size;
+  }
+  return capacity;
+}
+
+/**
  * A raiz que vai TRANSPORTAR o fósforo deste depósito, se existir.
  *
  * O depósito mineral não precisa estar sobre uma raiz — ele é rocha, e fica no
@@ -89,6 +125,11 @@ export function attachTransportRoot(level, deposit, settings = null) {
   deposit.transportRootLogicIndex = found.root.logicIndex ?? null;
   deposit.transportDistance = found.distance;
   deposit.transportBlockedReason = null;
+  // Marca na PRÓPRIA raiz, para o registro de ocupação enxergar a função. Sem
+  // isto, a raiz nitrogenada poderia escolher justamente ela como alvo — e o
+  // alvo da FBN é removido até a nodulação, o que deixaria o depósito sem
+  // transporte no meio da fase.
+  found.root.phosphateTransportRoot = true;
   return found;
 }
 

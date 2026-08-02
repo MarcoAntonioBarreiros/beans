@@ -10,7 +10,7 @@ import {
 import { PLAYER_SKINS, PLAYER_SKIN_STORAGE_KEY, resolvePlayerSkin } from '../render/player-skins.js';
 import { PATHOGEN_PRESSURE_DEFAULTS } from './pathogen-pressure.js';
 import { PATHOGEN_ARRIVAL_DEFAULTS } from './pathogen-arrival.js';
-import { phosphateHudCapacity } from './hud-context.js';
+import { phosphateHudCapacity, phosphateObjectiveMinimum } from './hud-context.js';
 import {
   PLAYER_TUNING_LIMITS, getPlayerTuning, resetPlayerTuning, setPlayerTuning,
 } from '../render/player-skin-tuning.js';
@@ -674,6 +674,12 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
       }
       const round = value => (Math.round(Number(value) * 1000) / 1000).toFixed(3);
       const pools = level.availablePhosphatePools || [];
+      // As tres leituras que se confundiam: CAPACIDADE e quanto a fase tem,
+      // MINIMO e a nota de corte do objetivo, ESTOQUE e o que ja chegou na raiz.
+      const capacity = phosphateHudCapacity(level);
+      const objectiveMinimum = phosphateObjectiveMinimum(sim?.state?.campaign?.phase ?? 0);
+      const remaining = (level.phosphateDeposits || [])
+        .reduce((sum, entry) => sum + Math.max(0, Number(entry.remainingPhosphate) || 0), 0);
       const soil = pools.reduce((sum, pool) => sum + Math.max(0, pool.amount || 0), 0);
       const deposits = level.phosphateDeposits || [];
       const insoluble = deposits.reduce((sum, entry) => sum + (entry.remainingPhosphate || 0), 0);
@@ -722,8 +728,16 @@ export function createPhaseLabSession({ windowObject = globalThis.window } = {})
         `P disponivel no solo   : ${round(soil)}   <- soma de availablePhosphatePools[].amount`,
         `P transportado na fase : ${round(phosphate.transportedPhosphate)}`,
         `P armazenado nas raizes: ${round(phosphate.rootPhosphateStock)}   <- e este que alimenta o HUD`,
-        `capacidade do HUD      : ${round(phosphateHudCapacity(sim?.state?.campaign?.phase ?? 0))}`
-          + '   (minimumTransportedPhosphate da fase)',
+        `CAPACIDADE MINERAL     : ${round(capacity)}`
+          + `   (${level.phosphateDepositCount ?? deposits.length} depositos funcionais)`
+          + `${capacity > 0 ? '' : '   <- nenhum deposito funcional gerado'}`,
+        `reserva preenchida     : ${capacity > 0
+          ? `${Math.round(Math.min(100, phosphate.rootPhosphateStock / capacity * 100))}%`
+          : '—'}`,
+        `minimo do objetivo     : ${round(objectiveMinimum)}`
+          + `   ${phosphate.rootPhosphateStock >= objectiveMinimum ? 'cumprido' : 'pendente'}`
+          + '   (minimumTransportedPhosphate — so a condicao do objetivo usa)',
+        `ainda nos depositos    : ${round(remaining)}`,
         'pocas disponiveis      :',
         poolLines,
         'depositos              :',

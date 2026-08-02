@@ -58,6 +58,7 @@ import {
   createDefaultPhaseLabConfig,
 } from '../src/procgen/phase-lab-config.js';
 import { findTransportRootFor } from '../src/procgen/phosphate-solubilization.js';
+import { auditPlatformOccupancy } from '../src/procgen/platform-occupancy.js';
 import { evaluateMycorrhizaBridgeCandidate } from '../src/procgen/mycorrhiza-bridge-feasibility.js';
 import { evaluatePropulsionCrossing } from '../src/procgen/propulsion-feasibility.js';
 
@@ -235,31 +236,12 @@ function auditPhosphate(level) {
   };
 }
 
-/**
- * Plataformas com funções incompatíveis acumuladas.
- *
- * Uma raiz não pode ser, ao mesmo tempo, alvo removível da FBN e host de ponte:
- * quando a FBN remove o alvo, a ponte perde o destino e o vão fica sem solução.
- */
+// Conflitos de ocupacao vem do registro compartilhado — o MESMO que os
+// instaladores consultam antes de dar funcao a uma plataforma. Uma heuristica
+// propria aqui poderia discordar de quem decide, e a auditoria mediria outra
+// coisa que nao o produto.
 function auditConflicts(level) {
-  const conflicts = [];
-  for (const platform of level.platforms || []) {
-    const roles = [];
-    if (platform.nitrogenGate === 'target') roles.push('alvo-fbn');
-    if (platform.bridgeGateHost) roles.push('host-ponte');
-    if (platform.bridgeGate) roles.push('destino-ponte');
-    if (platform.ascentGateHost) roles.push('host-escada');
-    if (platform.ascentGate) roles.push('destino-escada');
-    if (platform.phosphateWallHost) roles.push('host-parede-p');
-    if (platform.final) roles.push('raiz-final');
-    const incompatible = roles.includes('alvo-fbn') && roles.length > 1
-      || roles.includes('raiz-final') && roles.length > 1
-      || (roles.includes('host-ponte') && roles.includes('destino-escada'));
-    if (incompatible) {
-      conflicts.push({ logicIndex: platform.logicIndex, roles });
-    }
-  }
-  return conflicts;
+  return auditPlatformOccupancy(level);
 }
 
 /** Raízes onde uma colônia madura de Azo NÃO conseguiria formar escada. */

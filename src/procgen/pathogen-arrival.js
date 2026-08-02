@@ -1,6 +1,9 @@
 import { campaignManifest } from './campaign-manifest.js';
 import { createRandom } from './random.js';
-import { MELOIDOGYNE_BASE_SPEED } from './meloidogyne-lifecycle.js';
+import {
+  MELOIDOGYNE_BASE_SPEED,
+  isActiveMeloidogyneGall,
+} from './meloidogyne-lifecycle.js';
 import { PATHOGEN_PRESSURE_DEFAULTS } from './pathogen-pressure.js';
 
 // CHEGADAS DE PATÓGENO — etapa 2: quando e onde
@@ -219,12 +222,26 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
   // "Ativa" é o que o enunciado lista, e cada item vem do estado que o próprio
   // ciclo já mantém. Nada aqui inventa contagem nova.
 
+  /**
+   * A Meloidogyne esta ATIVA — isto e, ha organismo vivo no solo ou na raiz?
+   *
+   * Cicatriz nao e organismo. `galls.length` contava toda galha, inclusive a
+   * residual, e a residual nunca some: depois do primeiro ciclo terminar, a
+   * fase ficava presa em "ameaca ativa" para sempre e nenhuma chegada externa
+   * nova podia acontecer. O ciclo terminado bloqueava o proximo por deixar
+   * evidencia de que existiu.
+   *
+   * Ativa quando ha J2 vivo (em transito, buscando, penetrando ou migrando),
+   * galha ativa, ou massa com ovos viaveis. Massa vazia, massa neutralizada,
+   * femea morta e cicatriz nao contam.
+   */
   function meloidogyneActive() {
     const lifecycle = systems.meloidogyneLifecycle;
     if (!lifecycle) return 0;
     const juveniles = (lifecycle.juveniles || []).filter(entry => entry.alive).length;
-    const galls = (lifecycle.galls || []).length;
-    const masses = (lifecycle.eggMasses || []).filter(mass => mass.eggs > 0).length;
+    const galls = (lifecycle.galls || []).filter(isActiveMeloidogyneGall).length;
+    const masses = (lifecycle.eggMasses || [])
+      .filter(mass => mass.eggs > 0 && !mass.neutralized).length;
     return juveniles + galls + masses > 0 ? 1 : 0;
   }
 
@@ -496,13 +513,30 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
     return Number.isFinite(health) ? clamp(health, 0, 1) : 1;
   }
 
+  /** Vagas de infeccao OCUPADAS nesta raiz. So organismo vivo — duas cicatrizes
+   *  antigas nao podem tornar a raiz permanentemente imune. */
   function occupancyOf(root) {
     const lifecycle = systems.meloidogyneLifecycle;
     if (!lifecycle) return 0;
-    const galls = (lifecycle.galls || []).filter(gall => gall.platform === root).length;
+    const galls = (lifecycle.galls || [])
+      .filter(gall => gall.platform === root && isActiveMeloidogyneGall(gall)).length;
     const inside = (lifecycle.juveniles || [])
       .filter(juvenile => juvenile.targetRoot === root && juvenile.state !== 'seeking').length;
     return galls + inside;
+  }
+
+  /**
+   * Galhas de QUALQUER estagio nesta raiz, inclusive as residuais.
+   *
+   * A Ralstonia entra por ferida, e a cicatriz de Meloidogyne continua sendo
+   * uma porta — nao importa se a femea que a abriu ja morreu. Separar as duas
+   * contagens e o que permite tirar a cicatriz da ocupacao SEM mexer na
+   * pontuacao da Ralstonia, que fica exatamente como estava.
+   */
+  function gallScarsOf(root) {
+    const lifecycle = systems.meloidogyneLifecycle;
+    if (!lifecycle) return 0;
+    return (lifecycle.galls || []).filter(gall => gall.platform === root).length;
   }
 
   function ralstoniaOn(root) {
@@ -546,7 +580,9 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
     const cloud = cloudAttraction(root);
     const distance = playerDistanceScore(root);
     let lesion = 0;
-    if (occupancyOf(root) > 0) lesion += 0.6;
+    // Cicatriz conta: a porta que a galha abriu continua aberta depois de a
+    // femea morrer. Por isso `gallScarsOf` e nao `occupancyOf`.
+    if (gallScarsOf(root) > 0) lesion += 0.6;
     if ((root.rhizoctoniaColonization || 0) > 0.15) lesion += 0.5;
     if (root.opportunisticFocus) lesion += 0.4;
     if ((root.woundOpening || 0) > 0.1) lesion += 0.5;
@@ -561,7 +597,7 @@ export function createPathogenArrival({ state, systems = {}, settings = null } =
       occupancy: 0,
       protection,
       lesion,
-      otherPathogen: occupancyOf(root) > 0 ? 1 : 0,
+      otherPathogen: gallScarsOf(root) > 0 ? 1 : 0,
       score: cloud * 3 + distance + lesion + protection + (health < 0.2 ? -0.5 : 0),
     };
   }

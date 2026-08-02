@@ -23,6 +23,27 @@ const pointOnRoot = (p, x) => ({ x: clamp(x, p.x + 18, p.x + p.w - 18), y: p.y -
  */
 export const MELOIDOGYNE_BASE_SPEED = 47;
 
+/**
+ * ESTA GALHA É UMA INFECÇÃO VIVA?
+ *
+ * A galha não desaparece quando a fêmea morre: fica a SEQUELA — o tecido
+ * deformado e a perda permanente de saúde máxima. Isso é correto e continua
+ * assim; a cicatriz é o registro de que a infecção existiu.
+ *
+ * O erro era tratar a cicatriz como organismo. `occupancy` contava toda galha
+ * na plataforma, e o controlador de chegadas contava `galls.length` como ameaça
+ * ativa. Consequência: uma raiz com duas cicatrizes antigas ficava
+ * permanentemente "cheia" e não podia mais ser infectada, e a fase inteira
+ * ficava travada em "Meloidogyne ativa" para sempre — nenhuma chegada externa
+ * nova acontecia depois do primeiro ciclo terminar, porque o ciclo terminado
+ * deixava evidência que parecia organismo.
+ *
+ * Um helper só, compartilhado, para as duas definições não divergirem.
+ */
+export function isActiveMeloidogyneGall(gall) {
+  return Boolean(gall) && gall.dead !== true && gall.stage !== 'residual-gall';
+}
+
 // Quantos pedaços usar para medir o comprimento da trajetória curva. Com 18 o
 // erro contra uma integração fina fica abaixo de 1%, e é o que decide a duração
 // do percurso — medir a corda em vez da curva encurtaria a viagem.
@@ -495,8 +516,11 @@ export function createMeloidogyneLifecycle({ state, entities }) {
     }
     return value;
   }
+  // Vagas de infeccao OCUPADAS nesta raiz. Cicatriz nao ocupa vaga: ela e
+  // registro do que ja passou, nao organismo disputando espaco.
   function occupancy(p) {
-    return galls.filter(g => g.platform === p).length + juveniles.filter(j => j.alive && j.targetRoot === p && j.state !== 'seeking').length;
+    return galls.filter(g => g.platform === p && isActiveMeloidogyneGall(g)).length
+      + juveniles.filter(j => j.alive && j.targetRoot === p && j.state !== 'seeking').length;
   }
   function chooseRoot(j) {
     let best = null, score = Infinity;
@@ -552,7 +576,14 @@ export function createMeloidogyneLifecycle({ state, entities }) {
   }
   function addGall(j) {
     const p = j.targetRoot;
-    if (!p || galls.length >= 8 || galls.filter(g => g.platform === p).length >= 2) { j.alive = false; return; }
+    // Os dois tetos passam a contar so galha ATIVA. Com cicatriz contando, oito
+    // sequelas espalhadas pela fase bloqueavam qualquer infeccao nova, e duas na
+    // mesma raiz a tornavam permanentemente imune — softlock do ciclo, nao
+    // dificuldade.
+    const activeGalls = galls.filter(isActiveMeloidogyneGall);
+    if (!p
+      || activeGalls.length >= 8
+      || activeGalls.filter(g => g.platform === p).length >= 2) { j.alive = false; return; }
     galls.push({
       id: `melo-gall-${gallId++}`, platform: p, x: j.feedingX, y: p.y + Math.min(22, p.h * .34),
       generation: j.generation, progress: .04, age: 0, stage: 'feeding-site', femaleMaturity: 0,

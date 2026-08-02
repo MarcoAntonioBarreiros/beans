@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { PHOSPHATE_SOLUBILIZATION_DEFAULTS } from '../src/procgen/campaign-manifest.js';
-import { phosphateHudCapacity, updateContextPanel } from '../src/procgen/hud-context.js';
+import {
+  phosphateHudCapacity,
+  phosphateObjectiveMinimum,
+  updateContextPanel,
+} from '../src/procgen/hud-context.js';
 import {
   MELOIDOGYNE_BASE_SPEED,
   createMeloidogyneLifecycle,
@@ -12,7 +16,10 @@ import {
   createPathogenArrival,
 } from '../src/procgen/pathogen-arrival.js';
 import { PATHOGEN_PRESSURE_DEFAULTS } from '../src/procgen/pathogen-pressure.js';
-import { createPhosphateSolubilization } from '../src/procgen/phosphate-solubilization.js';
+import {
+  createPhosphateSolubilization,
+  finalizePhosphateStockCapacity,
+} from '../src/procgen/phosphate-solubilization.js';
 import { createSimulator } from '../src/procgen/simulator.js';
 
 // PACOTE DE CORREÇÕES — o fósforo que aparecia zerado e a chegada acelerada
@@ -44,6 +51,14 @@ function openPool({ state, phosphate }, root, amount, mycorrhiza) {
     amount, absorptionState: 'absorbing', hadTransport: false,
   };
   state.level.availablePhosphatePools.push(pool);
+  // A barra do HUD divide pela CAPACIDADE MINERAL da fase, finalizada no fim da
+  // geracao. Sem um deposito registrado e sem a finalizacao, a capacidade e
+  // zero e o indicador some — que e o comportamento certo para fase sem
+  // fosforo, mas nao e o caso aqui.
+  state.level.phosphateDeposits.push({
+    id: pool.depositId, initialPhosphate: amount, remainingPhosphate: amount,
+  });
+  finalizePhosphateStockCapacity(state.level);
   mycorrhiza.colonies.push({
     id: `myc-${root.logicIndex}`, platform: root, type: 'myco',
     x: root.x + root.w / 2, y: root.y,
@@ -156,11 +171,14 @@ test('5. depois da entrega o HUD mostra valor maior que zero', () => {
   const match = div.innerHTML.match(/Fósforo na raiz \(P\): <strong>(\d+)%/);
   assert.ok(match, 'o indicador de fósforo não foi renderizado');
   assert.ok(Number(match[1]) > 0, `o HUD continua em ${match[1]}%`);
-  // A capacidade é o mínimo que fecha o objetivo, não um máximo inventado.
+  // O denominador da barra deixou de ser o minimo do objetivo e passou a ser a
+  // CAPACIDADE MINERAL da fase. Os dois numeros continuam existindo, com papeis
+  // separados — e e essa separacao que se tranca aqui.
   assert.equal(
-    phosphateHudCapacity(7),
+    phosphateObjectiveMinimum(7),
     PHOSPHATE_SOLUBILIZATION_DEFAULTS.minimumTransportedPhosphate,
   );
+  assert.equal(phosphateHudCapacity(kit.state.level), 0.5, 'a capacidade nao e a da fase');
 });
 
 test('6. as três leituras do fósforo são distinguíveis entre si', () => {
