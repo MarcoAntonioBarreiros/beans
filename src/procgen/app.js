@@ -68,7 +68,8 @@ import {
   createPathogenArrival,
   PATHOGEN_ARRIVAL_DEFAULTS,
 } from './pathogen-arrival.js';
-import { createPhaseFinale, PHASE_FINALE_SECONDS } from './phase-finale.js';
+import { createPhaseFinale, phaseFinaleSeconds } from './phase-finale.js';
+import { celebrationCycleSeconds, resolvePlayerSkin } from '../render/player-skins.js';
 import {
   advanceCampaignPhase,
   campaignPhaseSeed,
@@ -687,13 +688,23 @@ if (phaseLab.enabled) phaseLab.configureCampaign(campaign);
 sim.state.campaign = campaign;
 const cameraView = createCameraView({ canvas, state: sim.state });
 window.miguelitoViewport = responsiveCanvas;
-// A revelacao do feijoeiro tem mundo e camera PROPRIOS — nao compartilha
-// `cameraView`. So precisa saber o tamanho da superficie de desenho, que aqui e
-// o proprio canvas (o `responsive-canvas` ja escreve largura/altura logicas
-// nele, sem fator de DPI).
+// A cinematica de fim de fase NAO tem mundo nem camera propria: ela assume a
+// camera real (`cameraView.beginCinematic`) e acrescenta ao mundo da fase so o
+// que ainda nao existia — superficie, ceu e o feijoeiro nascendo do colo da raiz
+// final compartilhada. Miguelito continua sendo desenhado pelo renderizador
+// normal, no lugar onde terminou a fase.
 const phaseFinale = createPhaseFinale({
+  state: sim.state,
+  cameraView,
   getViewport: () => ({ width: canvas.width, height: canvas.height }),
 });
+// O ciclo da comemoracao sai da PROPRIA folha de sprite (8 quadros a 6 fps =
+// 1,333 s). O afastamento nao pode comecar antes de ele terminar, e este numero
+// nao pode viver duplicado aqui.
+const celebrationSeconds = celebrationCycleSeconds(resolvePlayerSkin({
+  locationLike: window.location,
+  storage: (() => { try { return window.localStorage; } catch (_) { return null; } })(),
+}));
 // Os leitores de estado da fase (estoque, alertas, objetivos, painel de
 // contexto) sao HTML por cima do canvas: ficariam flutuando sobre o ceu. Somem
 // enquanto a cena roda e voltam sozinhos na fase seguinte.
@@ -1452,10 +1463,10 @@ function maybeAdvanceCampaign() {
     // fase ate o stinger de 10,24 s terminar, e ate hoje eram 10 s de tela
     // parada. A animacao dura ~4,3 s e nao interfere na contagem: se ela falhar,
     // a fase avanca exatamente como antes.
-    phaseFinale.begin(report);
+    phaseFinale.begin({ report, celebrationSeconds });
     // Teto duro da espera pela cena: se o quadro parar de chamar `update` por
     // qualquer motivo, a fase avanca assim mesmo. Nunca prende a campanha.
-    campaign.finaleDeadline = sim.state.time + PHASE_FINALE_SECONDS + 1.5;
+    campaign.finaleDeadline = sim.state.time + phaseFinaleSeconds(celebrationSeconds) + 1.5;
     // Uma vez por fase, no ponto exato da captura. `beginPhaseVictory` faz mais
     // que tocar o stinger: suprime a musica da fase, abaixa o ambiente e para as
     // gotas — antes a musica continuava audivel por baixo da vitoria.
@@ -1650,6 +1661,12 @@ function renderWorld() {
   try {
     cameraView.apply(ctx);
     renderer.render();
+    // Superficie, ceu e feijoeiro entram AQUI, no mundo real da fase e dentro da
+    // mesma transformacao de camera. Depois do renderizador porque o fundo dele
+    // e ancorado no viewport e cobriria o ceu; o recorte acima da superficie
+    // garante que nada do subsolo — plataforma, organismo, particula, raiz ou
+    // jogador — seja repintado.
+    phaseFinale.renderWorldLayer(ctx);
     sim.state.level.traversalDebugVisible = showDebug;
     platformVisuals.drawWorld(ctx);
     rhizoctoniaControl.render(ctx);
@@ -1722,13 +1739,15 @@ function loop(now) {
     }
     if (advanced) tutorialManager?.updateAutomaticPresentation?.(dt);
     if (advanced) maybeAnnounceTraversalEncounter();
-    renderWorld();
-    // Fora do `advance`: a revelacao roda pelo relogio real do quadro e nao
-    // depende de o quadro de jogo ter avancado (um cartao de tutorial aberto
-    // congela o mundo, nao a animacao). `render` devolve `false` enquanto o
-    // modulo esta ocioso — no jogo normal nao desenha nada.
+    // ANTES de desenhar: e este passo que move a camera real e o crescimento da
+    // planta que `renderWorld` vai usar. Fica fora do `advance` de proposito —
+    // a cinematica roda pelo relogio real do quadro e nao depende de o mundo ter
+    // avancado (um cartao de tutorial aberto congela o jogo, nao a cena).
     phaseFinale.update(dt);
-    const finaleVisible = phaseFinale.render(ctx);
+    renderWorld();
+    // Cartao em coordenadas de tela, fora da transformacao do mundo.
+    phaseFinale.renderOverlay(ctx);
+    const finaleVisible = phaseFinale.active;
     if (finaleVisible !== hudHiddenByFinale) {
       hudHiddenByFinale = finaleVisible;
       document.body.classList.toggle('phase-finale', finaleVisible);

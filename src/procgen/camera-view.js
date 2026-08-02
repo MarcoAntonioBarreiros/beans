@@ -5,6 +5,10 @@ const DEFAULT_ZOOM = 1.45;
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 1.8;
 const ZOOM_STEP = .1;
+// O afastamento do fim de fase precisa passar do limite que o jogador pode
+// escolher: 1 e o mais longe que a roda vai, e a raiz inteira mais o feijoeiro
+// nao cabem nisso. Este piso vale SO para a cinematica.
+const CINEMATIC_MIN_ZOOM = .22;
 
 function roundedZoom(value) {
   return Math.round(value * 20) / 20;
@@ -39,6 +43,10 @@ export function createCameraView({ canvas, state }) {
   );
   let zoom = DEFAULT_ZOOM;
   let targetZoom = DEFAULT_ZOOM;
+  // Enquanto isto existe, o rastreamento do jogador esta suspenso e quem escreve
+  // cameraX/cameraY/zoom e a cinematica. `targetZoom` fica intacto: e a escolha
+  // do jogador, e ela volta assim que o foco termina.
+  let cinematic = null;
   const readout = document.querySelector('[data-camera-readout]');
 
   state.cameraZoom = zoom;
@@ -67,11 +75,69 @@ export function createCameraView({ canvas, state }) {
   }
 
   function resetTracking() {
+    // Fase nova comeca sem resto de cinematica: se o foco vazasse, a fase
+    // seguinte abriria com o zoom do afastamento e sem perseguir o jogador.
+    cinematic = null;
+    zoom = targetZoom;
+    state.cameraZoom = zoom;
     state.cameraX = 0;
     state.cameraY = 0;
   }
 
+  /**
+   * Assume a camera para uma cinematica e devolve o enquadramento REAL do
+   * instante — nao um valor fixo fingindo ser o quadro anterior. Quem chama
+   * interpola a partir daqui, e o primeiro quadro da cinematica e, por
+   * construcao, identico ao ultimo quadro jogavel.
+   */
+  function beginCinematic() {
+    const viewportWidth = canvas.width || W;
+    const viewportHeight = canvas.height || H;
+    cinematic = true;
+    return {
+      x: state.cameraX || 0,
+      y: state.cameraY || 0,
+      zoom,
+      viewportWidth,
+      viewportHeight,
+      visibleWidth: viewportWidth / zoom,
+      visibleHeight: viewportHeight / zoom,
+    };
+  }
+
+  function setCinematic({ x, y, zoom: value } = {}) {
+    if (!cinematic) return false;
+    if (Number.isFinite(value)) {
+      zoom = clamp(value, CINEMATIC_MIN_ZOOM, MAX_ZOOM);
+      state.cameraZoom = zoom;
+    }
+    if (Number.isFinite(x)) state.cameraX = x;
+    if (Number.isFinite(y)) state.cameraY = y;
+    const viewportWidth = canvas.width || W;
+    const viewportHeight = canvas.height || H;
+    state.viewportWidth = viewportWidth;
+    state.viewportHeight = viewportHeight;
+    state.visibleWorldWidth = viewportWidth / zoom;
+    state.visibleWorldHeight = viewportHeight / zoom;
+    return true;
+  }
+
+  /**
+   * Devolve a camera ao jogo. O zoom volta a ser o que o jogador escolheu, e
+   * nada da cinematica sobrevive para a fase seguinte.
+   */
+  function endCinematic() {
+    if (!cinematic) return false;
+    cinematic = null;
+    zoom = targetZoom;
+    state.cameraZoom = zoom;
+    return true;
+  }
+
   function update(dt) {
+    // Com o foco cinematico ativo o rastreamento nao roda: o afastamento seria
+    // desfeito quadro a quadro pela perseguicao ao jogador.
+    if (cinematic) return;
     const zoomBlend = 1 - Math.pow(.0007, dt);
     zoom = lerp(zoom, targetZoom, zoomBlend);
     if (Math.abs(zoom - targetZoom) < .001) zoom = targetZoom;
@@ -178,6 +244,10 @@ export function createCameraView({ canvas, state }) {
     zoomIn,
     zoomOut,
     resetZoom,
+    beginCinematic,
+    setCinematic,
+    endCinematic,
+    get cinematicActive() { return Boolean(cinematic); },
     get zoom() { return zoom; },
     get targetZoom() { return targetZoom; },
   };

@@ -1,5 +1,6 @@
 import { W } from '../core/constants.js';
 import { PHASE_VICTORY_TRANSITION_SECONDS } from '../audio-manifest.js';
+import { drawFinalRoot } from '../render/final-root-visual.js';
 
 const TAU = Math.PI * 2;
 
@@ -81,46 +82,20 @@ export function createGoalSystem({ state, entities }) {
     ctx.save();
     ctx.translate(-state.cameraX, 0);
 
-    const pulse = 1 + Math.sin(time * 2.1) * .05;
+    // A RAIZ FINAL VEM DO MODELO COMPARTILHADO.
+    //
+    // Antes havia um desenho aqui e outro, parecido, dentro da cinemática de fim
+    // de fase: o afastamento da câmera trocava de raiz no meio do caminho. Agora
+    // existe um só caminho de desenho, e a cinemática não desenha raiz nenhuma —
+    // ela só empurra o pulso por `level.finalRootPulse`.
+    const cinematicPulse = Number(state.level?.finalRootPulse);
+    const glow = Number.isFinite(cinematicPulse)
+      ? cinematicPulse
+      : (goal.completed ? .55 : 0);
+    drawFinalRoot(ctx, goal, { pulse: glow, time });
+
     ctx.save();
     ctx.translate(goal.x, goal.y);
-    ctx.scale(pulse, pulse);
-
-    ctx.shadowBlur = goal.completed ? 42 : 24;
-    ctx.shadowColor = goal.completed ? '#a7ffd2' : '#d6b37f';
-    ctx.strokeStyle = goal.completed ? '#b9ffd8' : '#d6b37f';
-    ctx.lineCap = 'round';
-    ctx.lineWidth = 24;
-    ctx.beginPath();
-    ctx.moveTo(0, -205);
-    ctx.bezierCurveTo(-18, -138, 26, -76, 0, 20);
-    ctx.bezierCurveTo(-10, 64, 12, 95, 0, 130);
-    ctx.stroke();
-
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = goal.completed ? 'rgba(235,255,244,.88)' : 'rgba(255,235,198,.66)';
-    ctx.lineWidth = 3;
-    ctx.stroke();
-
-    for (let i = 0; i < 9; i++) {
-      const side = i % 2 ? -1 : 1;
-      const y = -112 + i * 28;
-      const length = 42 + (i % 3) * 18;
-      ctx.strokeStyle = goal.completed ? 'rgba(142,255,193,.76)' : 'rgba(215,181,125,.7)';
-      ctx.lineWidth = 5 - i * .18;
-      ctx.beginPath();
-      ctx.moveTo(side * 2, y);
-      ctx.bezierCurveTo(side * 20, y + 8, side * 28, y + 24, side * length, y + 34);
-      ctx.stroke();
-    }
-
-    const halo = ctx.createRadialGradient(0, 44, 8, 0, 44, goal.completed ? 120 : 86);
-    halo.addColorStop(0, goal.completed ? 'rgba(140,255,190,.65)' : 'rgba(214,179,127,.42)');
-    halo.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = halo;
-    ctx.beginPath();
-    ctx.arc(0, 44, goal.completed ? 120 : 86, 0, TAU);
-    ctx.fill();
 
     for (let i = 0; i < 14; i++) {
       const a = i / 14 * TAU + time * (goal.completed ? .42 : .18);
@@ -134,7 +109,10 @@ export function createGoalSystem({ state, entities }) {
     ctx.globalAlpha = 1;
     ctx.restore();
 
-    if (goal.x > state.cameraX - 160 && goal.x < state.cameraX + W + 160) {
+    // Durante a revelacao o caule nasce exatamente onde este rotulo fica, e o
+    // cartao de resultado ja diz "FASE CONCLUIDA" em coordenadas de tela.
+    const labelHidden = Boolean(state.level?.finalRootLabelHidden);
+    if (!labelHidden && goal.x > state.cameraX - 160 && goal.x < state.cameraX + W + 160) {
       ctx.textAlign = 'center';
       ctx.font = '800 14px Inter,system-ui';
       ctx.shadowBlur = 12;

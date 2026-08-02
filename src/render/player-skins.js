@@ -113,6 +113,33 @@ export const PLAYER_SKINS = Object.freeze({
   }),
 });
 
+/**
+ * Duracao de um ciclo completo de uma animacao, em segundos, LIDA DA FOLHA.
+ *
+ * A cinematica de fim de fase precisa saber quanto dura a comemoracao para nao
+ * comecar o afastamento no meio dela. Copiar "8 quadros a 6 fps" para o outro
+ * arquivo criaria dois numeros que envelhecem separados: no dia em que a folha
+ * mudar, a cinematica cortaria a animacao sem ninguem perceber.
+ */
+export function animationCycleSeconds(skin, name) {
+  const sheet = skin?.states?.[name];
+  if (!sheet) return 0;
+  const frames = Math.max(1, Number(sheet.frames) || 1);
+  const fps = Number(sheet.fps);
+  if (!Number.isFinite(fps) || fps <= 0) return 0;
+  return frames / fps;
+}
+
+/**
+ * Ciclo da comemoracao. O astronauta desenhado a mao nao tem folha — e ele e a
+ * rede de seguranca quando nenhuma carrega — entao a referencia cai na
+ * definicao canonica do Miguelito em vez de num numero solto.
+ */
+export function celebrationCycleSeconds(skin = null) {
+  return animationCycleSeconds(skin, 'celebrate')
+    || animationCycleSeconds(PLAYER_SKINS.miguelito, 'celebrate');
+}
+
 export function resolvePlayerSkin({ locationLike = null, storage = null } = {}) {
   const requested = new URLSearchParams(locationLike?.search || '').get('player');
   if (requested && PLAYER_SKINS[requested]) {

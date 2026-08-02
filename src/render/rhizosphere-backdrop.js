@@ -81,8 +81,15 @@ export function createRhizosphereBackdrop({
       return false;
     }
 
-    const width = Math.max(1, Number(viewport.width) || 1280);
-    const height = Math.max(1, Number(viewport.height) || 720);
+    // O QUE SE ENXERGA DO MUNDO, nao o tamanho do canvas.
+    //
+    // Com zoom < 1 a area visivel e MAIOR que a superficie de desenho, e usar a
+    // largura do canvas direto deixava o fundo terminando no meio da tela — um
+    // retangulo de borda dura que so apareceu quando o afastamento do fim de
+    // fase passou de 1x. `rhizosphere-parallax` ja fazia esta conta.
+    const zoom = Math.max(.01, Number(camera.zoom) || 1);
+    const width = Math.max(1, (Number(viewport.width) || 1280) / zoom);
+    const height = Math.max(1, (Number(viewport.height) || 720) / zoom);
     const tiles = calculateBackdropTiles({
       sourceWidth: image.naturalWidth,
       sourceHeight: image.naturalHeight,
@@ -112,7 +119,9 @@ export function createRhizosphereBackdrop({
     veil.addColorStop(0.58, 'rgba(3,18,25,.34)');
     veil.addColorStop(1, 'rgba(10,8,18,.56)');
     ctx.fillStyle = veil;
-    ctx.fillRect(0, cameraY, width, height);
+    // Ancorado na camera, nao em x=0: o veu acompanha o trecho visivel.
+    const cameraX = Number(camera.cameraX) || 0;
+    ctx.fillRect(cameraX, cameraY, width, height);
     ctx.restore();
     return true;
   }
