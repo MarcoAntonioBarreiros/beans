@@ -1,6 +1,7 @@
 import { H, W } from '../core/constants.js';
 import { organismSprites } from '../render/organism-sprites.js';
 import { getPhaseManifest } from './campaign-manifest.js';
+import { hyphalWorldBounds } from './world-bounds.js';
 
 const TAU = Math.PI * 2;
 // Limiar e tempo de sustentação do marco de controle fúngico (fase 5).
@@ -131,11 +132,14 @@ function buildLesions(state, anchor, random) {
     reached: true,
     phase: random() * TAU,
   }];
+  // Mesma faixa das outras hifas, derivada da geometria: a lesao acompanha uma
+  // ancora que pode estar acima da tela antiga.
+  const lesionBounds = hyphalWorldBounds(state?.level, { topMargin: 60, bottomMargin: 60 });
   if (!anchor.root) {
     for (const direction of [-1, 1]) {
       lesions.push({
         x: anchor.x + direction * (95 + random() * 55),
-        y: clamp(anchor.y + (random() - .5) * 70, 60, H - 60),
+        y: clamp(anchor.y + (random() - .5) * 70, lesionBounds.minY, lesionBounds.maxY),
         root: null,
         maturity: 0,
         reached: false,
@@ -303,6 +307,9 @@ export function createOpportunisticFungus({ state, entities, ecology }) {
 
   function growTip(network, tip, step, response) {
     if (!tip.active || network.segments.length >= MAX_HYPHAL_SEGMENTS_PER_FOCUS) return;
+    // Sem raiz hospedeira a ponta anda solta pelo solo, e o teto dela e o mesmo
+    // das outras hifas: derivado da geometria, nao a tela antiga.
+    const tipBounds = hyphalWorldBounds(state.level, { topMargin: 48 });
     const target = network.lesions[tip.targetIndex] || network.lesions[0];
     const direct = targetAngle(tip, target);
     const turn = Math.atan2(Math.sin(direct - tip.angle), Math.cos(direct - tip.angle));
@@ -315,7 +322,7 @@ export function createOpportunisticFungus({ state, entities, ecology }) {
     const nextY = tip.y + Math.sin(tip.angle) * step;
     tip.y = network.hostRoot
       ? clamp(nextY, network.hostRoot.y - 24, network.hostRoot.y + 1)
-      : clamp(nextY, 48, H - 48);
+      : clamp(nextY, tipBounds.minY, tipBounds.maxY);
     tip.age += step * .022;
     network.segments.push({
       start,

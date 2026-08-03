@@ -88,6 +88,36 @@ export function organismVerticalBounds(level, { topMargin = 62, bottomMargin = 6
   };
 }
 
+// FAIXA VERTICAL DAS HIFAS
+// ========================
+//
+// Micorriza, Trichoderma e o fungo oportunista prendiam as pontas em faixas
+// absolutas — [58, H-48], [54, H-48], [48, H-48]. Nasceram quando o mundo tinha
+// UMA tela de altura e viraram teto: na Fase 10 a rota principal sobe para Y
+// negativo, a colônia de micorriza fica lá em cima e a primeira ponta da hifa
+// era jogada de volta para y=58 no primeiro quadro — um salto visível entre o
+// esporo e a hifa, seguido da ponta morrendo por sair dos limites.
+//
+// O teto agora sai da geometria real, e SÓ desce abaixo do valor histórico
+// quando a geometria de fato sobe. Em fase plana o número é idêntico ao de
+// antes, então nada muda onde nada estava quebrado.
+//
+// O piso continua absoluto DE PROPÓSITO: embaixo estão os hazards e a zona
+// letal, e afrouxar aquele lado poria hifa dentro deles. É o mesmo critério de
+// `organismVerticalBounds`.
+const HYPHAL_HEADROOM = 130;
+
+export function hyphalWorldBounds(level, { topMargin = 58, bottomMargin = 48, headroom = HYPHAL_HEADROOM } = {}) {
+  const geometryTop = Number(level?.geometryTopY);
+  const opensUpward = finite(geometryTop) && geometryTop < topMargin;
+  return {
+    minX: 8,
+    maxX: Math.max(64, (Number(level?.endX) || 6500) - 8),
+    minY: opensUpward ? geometryTop - headroom : topMargin,
+    maxY: H - bottomMargin,
+  };
+}
+
 export function synchronizeWorldBounds(level, visibleWorldHeight = H) {
   const geometry = calculateWorldGeometryBounds(level);
   const visibleHeight = Math.max(1, Number(visibleWorldHeight) || H);

@@ -1,6 +1,7 @@
 import { H, W } from '../core/constants.js';
 import { clamp, createHyphalNetwork, renderHyphalNetwork, TAU, updateHyphalNetwork } from './hyphal-growth.js';
 import { fxLanded } from '../game-audio.js';
+import { hyphalWorldBounds } from './world-bounds.js';
 
 function nearestPointOnRect(x, y, rect) {
   return { x: clamp(x, rect.x, rect.x + rect.w), y: clamp(y, rect.y, rect.y + rect.h) };
@@ -375,7 +376,9 @@ export function createTrichodermaGrowth({ state, entities, ecology, colonies }) 
 
     updateHyphalNetwork(network, dt, {
       time: state.time,
-      bounds: { minX: 8, maxX: (state.level.endX || 6500) - 8, minY: 54, maxY: H - 48 },
+      // Mesmo motivo da micorriza: colonia em plataforma alta e alvo em Y
+      // negativo precisam caber. O piso continua fechado sobre os hazards.
+      bounds: hyphalWorldBounds(state.level, { topMargin: 54 }),
       growthScale,
       branchScale,
       coilDaughters: 3,

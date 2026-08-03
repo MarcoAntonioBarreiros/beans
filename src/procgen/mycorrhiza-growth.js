@@ -1,6 +1,7 @@
 import { H, W } from '../core/constants.js';
 import { fxLanded } from '../game-audio.js';
 import { organismSprites } from '../render/organism-sprites.js';
+import { hyphalWorldBounds } from './world-bounds.js';
 import {
   clamp,
   createHyphalNetwork,
@@ -249,7 +250,10 @@ export function createMycorrhizaGrowth({ state, entities, inoculants = null }) {
 
       updateHyphalNetwork(network.hypha, dt, {
         time: state.time,
-        bounds: { minX: 8, maxX: (state.level.endX || 6500) - 8, minY: 58, maxY: H - 48 },
+        // A colonia pode estar em plataforma de Y negativo: o teto sai da
+        // geometria real, senao a primeira ponta era jogada para y=58 e o
+        // esporo ficava a duzentos pixels da propria hifa.
+        bounds: hyphalWorldBounds(state.level, { topMargin: 58 }),
         growthScale: established ? 1.55 : .8,
         branchScale: established ? 1.15 : .82,
         targetProvider: tip => nearestRootTarget(state, tip.x, tip.y, tip.totalDistance < 70 ? 75 : 0),

@@ -1,4 +1,5 @@
 import { H } from '../core/constants.js';
+import { hyphalWorldBounds } from './world-bounds.js';
 
 export const TAU = Math.PI * 2;
 export const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -101,7 +102,10 @@ export function updateHyphalNetwork(network, dt, options = {}) {
   if (!network.active) return;
   const profile = network.profile;
   const time = options.time ?? 0;
-  const bounds = options.bounds || { minX: 10, maxX: 6000, minY: 58, maxY: H - 48 };
+  // Sem `bounds` explicito o padrao ainda sai da geometria, se houver nivel.
+  // A faixa fixa so sobrevive como ultimo recurso, para quem chama sem contexto.
+  const bounds = options.bounds
+    || (options.level ? hyphalWorldBounds(options.level) : { minX: 10, maxX: 6000, minY: 58, maxY: H - 48 });
   const growthScale = options.growthScale ?? 1;
   const branchScale = options.branchScale ?? 1;
   const targetProvider = options.targetProvider || (() => null);

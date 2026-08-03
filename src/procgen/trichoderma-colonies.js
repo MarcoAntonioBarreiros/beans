@@ -1,5 +1,6 @@
 import { H } from '../core/constants.js';
 import { organismSprites } from '../render/organism-sprites.js';
+import { hyphalWorldBounds } from './world-bounds.js';
 import { COLONY_ESTABLISHMENT_GROWTH } from '../audio-manifest.js';
 
 const TAU = Math.PI * 2;
@@ -43,11 +44,15 @@ export function createTrichodermaColonies({ state, input, ecology, entities }) {
 
   function createColony({ x, y, agents = [], natural = false }) {
     const support = nearestSubstrate(state, x, y);
+    const colonyBounds = hyphalWorldBounds(state.level, { topMargin: 72, bottomMargin: 72 });
     const count = Math.max(1, agents.length || 1);
     const colony = {
       id: `tricho-colony-${nextColonyId++}`,
       x: support?.x ?? x,
-      y: support?.y ?? clamp(y, 72, H - 72),
+      // Sem substrato por perto a colonia ainda precisa caber onde o mundo
+      // realmente vai; um teto de 72 a puxaria para baixo em rota alta, e a
+      // hifa nasceria longe de onde o jogador inoculou.
+      y: support?.y ?? clamp(y, colonyBounds.minY, colonyBounds.maxY),
       platform: support?.platform || null,
       vigor: natural ? .62 : clamp(.48 + count * .13, 0, 1),
       growth: .08,
