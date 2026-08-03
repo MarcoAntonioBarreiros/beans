@@ -221,6 +221,7 @@ const OBJECTIVE_LABELS = {
   containedVascularRalstoniaCount: 'Contenha uma infecção que já alcançou os vasos',
   activeCriticalRalstoniaCount: 'Chegue à raiz final sem murcha crítica ativa',
   blockedRalstoniaSpreadCount: 'Bloqueie uma disseminação para outra raiz',
+  succeededRalstoniaSpreadCount: 'Impeça que a Ralstonia alcance uma segunda raiz',
   averageVascularTransport: 'Preserve o transporte vascular',
   preservedVascularRootCount: 'Preserve raízes com transporte funcional',
   recoveredRootCount: 'Recupere uma raiz danificada',
@@ -486,6 +487,15 @@ function topologyDetourDebug(level) {
 // primeiro quadro (quando ainda nao existe nenhum foco) faz o jogador acreditar
 // que ja cumpriu algo — foi exatamente a queixa "um objetivo ja vem concluido".
 function finalStatusClass(condition, result) {
+  // Disseminacao contida e o mesmo tipo de leitura da murcha critica: um STATUS
+  // do agora, nao uma conquista. Neutro antes de a doenca comecar, estavel
+  // enquanto nada passou, vermelho quando passou, verde so no fim.
+  if (condition.key === 'succeededRalstoniaSpreadCount') {
+    const passaram = Number(result?.actual) || 0;
+    if (passaram > 0) return 'violated';
+    if (levelData?.goal?.completed) return 'completed';
+    return ralstoniaControl.challengeStarted ? 'stable' : 'pending-status';
+  }
   if (condition.key !== 'activeCriticalRalstoniaCount') {
     return result?.passed ? 'stable' : 'violated';
   }
@@ -496,6 +506,16 @@ function finalStatusClass(condition, result) {
 }
 
 function finalStatusNote(condition, result) {
+  if (condition.key === 'succeededRalstoniaSpreadCount') {
+    const passaram = Number(result?.actual) || 0;
+    if (passaram > 0) return `A doença alcançou outra raiz: ${passaram}`;
+    if (levelData?.goal?.completed) return 'Concluído sem disseminação';
+    if (!ralstoniaControl.challengeStarted) return '';
+    const bloqueadas = ralstoniaControl.blockedSpreadCount || 0;
+    return bloqueadas
+      ? `Contida nesta raiz · ${bloqueadas} disseminação${bloqueadas > 1 ? 'ões' : ''} bloqueada${bloqueadas > 1 ? 's' : ''}`
+      : 'Contida nesta raiz';
+  }
   if (condition.key !== 'activeCriticalRalstoniaCount') return '';
   const criticos = Number(result?.actual) || 0;
   if (criticos > 0) return `Murcha crítica ativa: ${criticos}`;

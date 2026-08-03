@@ -100,6 +100,9 @@ export function createCampaignObjectiveEvaluator({ state, systems = {} }) {
     if (key === 'containedVascularRalstoniaCount') return systems.ralstonia?.containedCount || 0;
     if (key === 'activeCriticalRalstoniaCount') return systems.ralstonia?.criticalCount || 0;
     if (key === 'blockedRalstoniaSpreadCount') return systems.ralstonia?.blockedSpreadCount || 0;
+    // Quantas disseminacoes CHEGARAM a outra raiz. Zero e o estado que a fase 9
+    // pede no fim: a doenca nao saiu de onde comecou.
+    if (key === 'succeededRalstoniaSpreadCount') return systems.ralstonia?.successfulSpreadCount || 0;
     if (key === 'averageVascularTransport') return systems.ralstonia?.averageTransport ?? 1;
     if (key === 'preservedVascularRootCount') return systems.ralstonia?.preservedVascularRootCount || 0;
     if (key === 'ecologicalScore') return Number(state.level.ecologicalScore || 0);

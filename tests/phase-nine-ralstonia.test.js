@@ -955,21 +955,43 @@ test('activeCriticalRalstoniaCount e uma condicao AO VIVO', () => {
   assert.equal(resultadoDe(evaluator, 'activeCriticalRalstoniaCount').passed, true, 'volta a passar');
 });
 
-test('prevencao, contencao e disseminacao bloqueada continuam acumulativas', () => {
+test('prevencao e contencao continuam acumulativas', () => {
   const { evaluator, ralstonia } = avaliadorFake();
-  for (const key of [
-    'preventedRalstoniaEntryCount',
-    'containedVascularRalstoniaCount',
-    'blockedRalstoniaSpreadCount',
+  for (const [key, campo] of [
+    ['preventedRalstoniaEntryCount', 'preventedCount'],
+    ['containedVascularRalstoniaCount', 'containedCount'],
   ]) {
-    const campo = key === 'preventedRalstoniaEntryCount' ? 'preventedCount'
-      : key === 'containedVascularRalstoniaCount' ? 'containedCount'
-      : 'blockedSpreadCount';
     ralstonia[campo] = 1;
     assert.equal(resultadoDe(evaluator, key).passed, true, `${key} conquistado`);
     ralstonia[campo] = 0;
     assert.equal(resultadoDe(evaluator, key).passed, true, `${key} permanece latched`);
   }
+});
+
+test('disseminacao contida e leitura DO AGORA, satisfeita por jogar bem', () => {
+  // O objetivo antigo — "bloqueie uma disseminacao" — exigia que a doenca
+  // saisse para poder ser bloqueada, e brigava com o de nao ter murcha critica.
+  // O novo comeca satisfeito e SO se perde se a Ralstonia alcancar outra raiz.
+  const { evaluator, ralstonia } = avaliadorFake();
+  const chave = 'succeededRalstoniaSpreadCount';
+  assert.equal(resultadoDe(evaluator, chave).passed, true, 'quem nao deixou passar ja cumpre');
+
+  ralstonia.successfulSpreadCount = 1;
+  assert.equal(resultadoDe(evaluator, chave).passed, false, 'a doenca alcancou outra raiz');
+
+  // E nao e latched: nao ha como "desfazer" uma disseminacao que chegou, mas a
+  // leitura acompanha o estado real em vez de travar no primeiro quadro.
+  const requisito = REQUISITOS.find(c => c.key === chave);
+  assert.equal(requisito.latch, false);
+  assert.equal(requisito.displayMode, 'final-status');
+});
+
+test('bloquear uma disseminacao continua sendo uma forma de manter isto zerado', () => {
+  // A mecanica de bloqueio nao foi removida — deixou de ser obrigatoria.
+  const { evaluator, ralstonia } = avaliadorFake();
+  ralstonia.blockedSpreadCount = 2;
+  ralstonia.successfulSpreadCount = 0;
+  assert.equal(resultadoDe(evaluator, 'succeededRalstoniaSpreadCount').passed, true);
 });
 
 test('a chegada na raiz final continua funcionando', () => {
@@ -983,13 +1005,22 @@ test('o teste final da fase 9 exige as quatro licoes e a chegada', () => {
   const keys = REQUISITOS.map(condition => condition.key);
   assert.deepEqual(keys.sort(), [
     'activeCriticalRalstoniaCount',
-    'blockedRalstoniaSpreadCount',
     'containedVascularRalstoniaCount',
     'preventedRalstoniaEntryCount',
     'reachedFinalRoot',
+    'succeededRalstoniaSpreadCount',
   ]);
   const critico = REQUISITOS.find(c => c.key === 'activeCriticalRalstoniaCount');
   assert.equal(critico.latch, false, 'declarado explicitamente como nao-latched');
+
+  // Os DOIS status de fim de fase agora andam juntos, e nenhum contradiz o
+  // outro: manter a doenca nesta raiz e manter nenhum foco critico sao
+  // resultados da MESMA jogada, nao exigencias opostas.
+  const disseminou = REQUISITOS.find(c => c.key === 'succeededRalstoniaSpreadCount');
+  assert.equal(disseminou.latch, false);
+  assert.equal(disseminou.displayMode, 'final-status');
+  assert.ok(!keys.includes('blockedRalstoniaSpreadCount'),
+    'bloquear deixou de ser obrigatorio — era inalcancavel dentro dos 4,5 s de aviso');
 });
 
 // ---------------------------------------------------------------------------
