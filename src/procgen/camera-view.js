@@ -1,13 +1,14 @@
 import { H, W } from '../core/constants.js';
 import { clamp, lerp } from '../core/math.js';
+import { zoomProfileFor } from './touch-profile.js';
 
-const DEFAULT_ZOOM = 1.45;
-const MIN_ZOOM = 1;
-const MAX_ZOOM = 1.8;
-const ZOOM_STEP = .1;
-// O afastamento do fim de fase precisa passar do limite que o jogador pode
-// escolher: 1 e o mais longe que a roda vai, e a raiz inteira mais o feijoeiro
-// nao cabem nisso. Este piso vale SO para a cinematica.
+// O perfil de zoom nao e mais unico: celular abre mais perto e chega mais perto
+// que computador. Os numeros vivem em `touch-profile.js`, junto do criterio que
+// decide qual aparelho e qual — o mesmo que liga os controles touch.
+
+// O afastamento do fim de fase precisa passar do limite que o JOGADOR pode
+// escolher: nem 1x nem o minimo de perfil nenhum mostram a raiz inteira mais o
+// feijoeiro. Este piso vale SO para a cinematica e nao muda com o aparelho.
 const CINEMATIC_MIN_ZOOM = .22;
 
 function roundedZoom(value) {
@@ -37,12 +38,19 @@ export function calculateVerticalCameraTarget({
 export function createCameraView({ canvas, state }) {
   const windowObject = canvas?.ownerDocument?.defaultView
     || (typeof window === 'undefined' ? null : window);
+  // Ancoramento vertical: continua com o criterio frouxo de sempre. Ele so
+  // decide se a camera senta o jogador um pouco mais alto na tela, e apertar o
+  // criterio aqui mudaria o enquadramento de quem joga em notebook com tela
+  // sensivel — sem que ninguem tenha pedido isso.
   const coarsePointer = Boolean(
     windowObject?.matchMedia?.('(pointer: coarse)').matches
       || windowObject?.navigator?.maxTouchPoints > 0,
   );
-  let zoom = DEFAULT_ZOOM;
-  let targetZoom = DEFAULT_ZOOM;
+  // Uma vez so, na criacao: trocar de perfil com o jogo rodando mudaria o
+  // enquadramento debaixo do jogador.
+  const profile = zoomProfileFor(windowObject);
+  let zoom = profile.default;
+  let targetZoom = profile.default;
   // Enquanto isto existe, o rastreamento do jogador esta suspenso e quem escreve
   // cameraX/cameraY/zoom e a cinematica. `targetZoom` fica intacto: e a escolha
   // do jogador, e ela volta assim que o foco termina.
@@ -58,20 +66,21 @@ export function createCameraView({ canvas, state }) {
   }
 
   function setZoom(value) {
-    targetZoom = roundedZoom(clamp(value, MIN_ZOOM, MAX_ZOOM));
+    targetZoom = roundedZoom(clamp(value, profile.min, profile.max));
     refreshReadout();
   }
 
   function zoomIn() {
-    setZoom(targetZoom + ZOOM_STEP);
+    setZoom(targetZoom + profile.step);
   }
 
   function zoomOut() {
-    setZoom(targetZoom - ZOOM_STEP);
+    setZoom(targetZoom - profile.step);
   }
 
   function resetZoom() {
-    setZoom(DEFAULT_ZOOM);
+    // O padrao do PERFIL ATIVO, nao um valor global: no celular 1,6x.
+    setZoom(profile.default);
   }
 
   function resetTracking() {
@@ -108,7 +117,7 @@ export function createCameraView({ canvas, state }) {
   function setCinematic({ x, y, zoom: value } = {}) {
     if (!cinematic) return false;
     if (Number.isFinite(value)) {
-      zoom = clamp(value, CINEMATIC_MIN_ZOOM, MAX_ZOOM);
+      zoom = clamp(value, CINEMATIC_MIN_ZOOM, profile.max);
       state.cameraZoom = zoom;
     }
     if (Number.isFinite(x)) state.cameraX = x;
@@ -241,6 +250,7 @@ export function createCameraView({ canvas, state }) {
     update,
     apply,
     resetTracking,
+    get zoomProfile() { return profile; },
     zoomIn,
     zoomOut,
     resetZoom,

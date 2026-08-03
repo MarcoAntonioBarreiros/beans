@@ -178,6 +178,7 @@ export function createTutorialManager({ state }) {
   const pageBody = mount.querySelector('.tutorial-page-body');
   const pagePoints = mount.querySelector('.tutorial-page-points');
   const pageDots = mount.querySelector('.tutorial-page-dots');
+  const pageScroll = mount.querySelector('.tutorial-page-scroll');
   const previousButton = mount.querySelector('.tutorial-prev');
   const nextButton = mount.querySelector('.tutorial-next');
   const libraryGrid = mount.querySelector('.tutorial-library-grid');
@@ -352,6 +353,11 @@ export function createTutorialManager({ state }) {
 
     renderCycle(card);
     renderDots(card);
+
+    // A pagina nova comeca do comeco. Sem isto a rolagem da pagina anterior
+    // vazava: quem tivesse descido ate o fim de uma pagina longa abria a
+    // seguinte ja no meio do texto, sem nada acima indicando que havia mais.
+    if (pageScroll) pageScroll.scrollTop = 0;
 
     const finalPage = pagePosition >= availablePages.length - 1;
     const nextActionLabel = finalPage

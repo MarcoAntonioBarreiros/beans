@@ -704,6 +704,15 @@ html.tutorial-open .phase-lab {
   z-index: 1 !important;
 }
 
+/* A AREA DE PAPEL TEM ALTURA FIXA — ENTAO PRECISA CONTER O QUE CRESCE.
+   Ela ocupa uma fracao fixa da arte (`--paper-height`), e as linhas 1 e 3 do
+   grid sao `auto`: crescem com o conteudo. Sem `overflow` isso vazava. Medido
+   antes do conserto, em 360x640: a caixa tinha 133px de altura e o bloco do
+   ciclo terminava 133px ABAIXO dela, 130px por cima das setas de navegacao, com
+   a regiao rolavel esmagada a 0px — o texto do cartao ficava inacessivel.
+   Quatro das cinco resolucoes moveis testadas estavam assim.
+   O `overflow: hidden` garante que nada saia da folha; as linhas com minimo 0
+   garantem que a do meio possa encolher em vez de empurrar as outras. */
 .tutorial-panel--card .tutorial-paper-content {
   position: absolute !important;
   left: var(--paper-left) !important;
@@ -713,12 +722,13 @@ html.tutorial-open .phase-lab {
 
   display: grid !important;
   grid-template-rows:
-    auto
+    minmax(0, auto)
     minmax(0, 1fr)
-    auto !important;
+    minmax(0, auto) !important;
 
   min-width: 0 !important;
   min-height: 0 !important;
+  overflow: hidden !important;
   z-index: 2 !important;
 }
 
@@ -788,7 +798,7 @@ html.tutorial-open .phase-lab {
   margin: 0 !important;
   color: #5f8739 !important;
   font-family: "Arial Rounded MT Bold", "Trebuchet MS", system-ui, sans-serif !important;
-  font-size: clamp(26px, 4.2cqw, 50px) !important;
+  font-size: clamp(15px, 4.2cqw, 50px) !important;
   font-weight: 900 !important;
   line-height: 1 !important;
   text-align: center !important;
@@ -803,7 +813,7 @@ html.tutorial-open .phase-lab {
   max-width: none !important;
   margin: .38em auto 0 !important;
   color: #6a4934 !important;
-  font-size: clamp(13px, 1.8cqw, 21px) !important;
+  font-size: clamp(10px, 1.8cqw, 21px) !important;
   font-weight: 700 !important;
   line-height: 1.2 !important;
   text-align: center !important;
@@ -815,7 +825,7 @@ html.tutorial-open .phase-lab {
   top: 1% !important;
   right: 1% !important;
   color: rgba(76,48,30,.55) !important;
-  font-size: clamp(9px, 1.1cqw, 14px) !important;
+  font-size: clamp(8px, 1.1cqw, 14px) !important;
   font-weight: 800 !important;
   font-family: inherit !important;
   letter-spacing: 0 !important;
@@ -845,18 +855,27 @@ html.tutorial-open .phase-lab {
   padding: 0 !important;
 
   color: #5f8739 !important;
-  font-size: clamp(17px, 2.3cqw, 28px) !important;
+  font-size: clamp(12px, 2.3cqw, 28px) !important;
   font-weight: 900 !important;
   line-height: 1.12 !important;
   text-align: left !important;
 }
 
+/* A UNICA regiao rolavel do cartao.
+   `touch-action: pan-y` e obrigatorio: a sobreposicao inteira declara
+   `touch-action: none` para o dedo nao arrastar a pagina por tras, e sem esta
+   excecao o gesto de rolar morria aqui — o texto que nao coubesse ficava
+   inalcancavel no celular. */
 .tutorial-panel--card .tutorial-page-scroll {
   width: 100% !important;
   min-height: 0 !important;
+  min-width: 0 !important;
   flex: 1;
   overflow-y: auto !important;
+  overflow-x: hidden !important;
   overscroll-behavior: contain;
+  touch-action: pan-y !important;
+  -webkit-overflow-scrolling: touch;
   padding-right: 6px !important;
   scrollbar-width: thin;
   scrollbar-color: rgba(107,73,50,.35) transparent;
@@ -869,7 +888,7 @@ html.tutorial-open .phase-lab {
   padding: 0 !important;
 
   color: #4b3020 !important;
-  font-size: clamp(14px, 1.72cqw, 21px) !important;
+  font-size: clamp(12px, 1.72cqw, 21px) !important;
   font-weight: 600 !important;
   line-height: 1.43 !important;
   text-align: left !important;
@@ -882,7 +901,7 @@ html.tutorial-open .phase-lab {
   padding-left: 1.3em !important;
 
   color: #4b3020 !important;
-  font-size: clamp(12px, 1.5cqw, 18px) !important;
+  font-size: clamp(11px, 1.5cqw, 18px) !important;
   font-weight: 600 !important;
   line-height: 1.36 !important;
   text-align: left !important;
@@ -894,7 +913,7 @@ html.tutorial-open .phase-lab {
 .tutorial-panel--card .tutorial-page-points li {
   padding-left: 0 !important;
   color: #4b3020 !important;
-  font-size: clamp(12px, 1.5cqw, 18px) !important;
+  font-size: clamp(11px, 1.5cqw, 18px) !important;
   line-height: 1.36 !important;
 }
 
@@ -920,7 +939,7 @@ html.tutorial-open .phase-lab {
   display: block !important;
   margin-bottom: .45em !important;
   color: #5f8739 !important;
-  font-size: clamp(10px, 1.3cqw, 15px) !important;
+  font-size: clamp(9px, 1.3cqw, 15px) !important;
   font-weight: 900 !important;
   text-align: left !important;
   letter-spacing: 0 !important;
@@ -954,7 +973,7 @@ html.tutorial-open .phase-lab {
   border-radius: 999px !important;
   background: linear-gradient(180deg, rgba(246,238,185,.92), rgba(218,201,135,.92)) !important;
   color: #5a3b27 !important;
-  font-size: clamp(9px, 1.15cqw, 14px) !important;
+  font-size: clamp(8px, 1.15cqw, 14px) !important;
   font-weight: 800 !important;
   line-height: 1.1 !important;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.55), 0 2px 3px rgba(74,48,29,.14) !important;
@@ -963,12 +982,12 @@ html.tutorial-open .phase-lab {
 
 .tutorial-panel--card .tutorial-cycle--long .tutorial-cycle-step {
   padding: .30em .62em !important;
-  font-size: clamp(8px, 1.03cqw, 13px) !important;
+  font-size: clamp(7px, 1.03cqw, 13px) !important;
 }
 
 .tutorial-panel--card .tutorial-cycle-arrow {
   color: #6c873f !important;
-  font-size: clamp(12px, 1.45cqw, 18px) !important;
+  font-size: clamp(10px, 1.45cqw, 18px) !important;
   font-weight: 900 !important;
   opacity: 1 !important;
 }
@@ -1090,3 +1109,82 @@ html.tutorial-open .phase-lab {
 
 
 
+
+/* ==================================================
+   CARTAO EM TELA PEQUENA
+   ==================================================
+
+   A folha desenhada na arte e bem maior que a area que o texto usava: o
+   retangulo de conteudo ocupava 58% x 51,5% dentro de um creme que vai de
+   ~14% a ~88%. Em desktop sobra altura e isso nunca incomodou. No celular o
+   cartao inteiro encolhe — em 360x640 a folha util tinha 133px de altura — e a
+   margem desperdicada passa a ser a diferenca entre ler e nao ler.
+
+   Aqui a area de conteudo cresce para dentro do creme, sem encostar nas vinhas
+   nem nos bichos das bordas. O desktop nao entra nesta consulta e continua
+   exatamente como estava. */
+@media (max-width: 900px), (max-height: 560px) {
+  .tutorial-panel--card .tutorial-card-view {
+    --paper-left: 19%;
+    --paper-top: 21%;
+    --paper-width: 62%;
+    --paper-height: 60%;
+  }
+  .tutorial-panel--card .tutorial-page { margin-top: .7em !important; }
+  .tutorial-panel--card .tutorial-page-title { margin-bottom: .3em !important; }
+  .tutorial-panel--card .tutorial-cycle-block {
+    width: 100% !important;
+    margin-top: .45em !important;
+    padding-top: .4em !important;
+  }
+  .tutorial-panel--card .tutorial-cycle-label { margin-bottom: .25em !important; }
+  .tutorial-panel--card .tutorial-subtitle { width: 96% !important; }
+  .tutorial-panel--card .tutorial-page-points { margin-top: .45em !important; gap: 4px !important; }
+}
+
+/* CELULAR EM PE — o caso mais apertado, e o unico que muda de estrategia.
+   Aqui o cartao e limitado pela LARGURA (96vw), entao a arte inteira fica baixa
+   e sobra tela vazia em cima e embaixo. Medido em 360x640, ja com a area
+   ampliada acima: a folha tinha 165px e o cabecalho, o titulo da pagina e o
+   ciclo consumiam ~130px — o miolo rolavel colapsava a zero e o texto do cartao
+   continuava inalcancavel.
+
+   Nao da para resolver isso encolhendo mais a tipografia sem torna-la ilegivel,
+   e cortar conteudo didatico esta fora de questao. Em pe, entao, quem rola e a
+   FOLHA INTEIRA, com o cabecalho preso no topo: continua havendo uma unica
+   regiao rolavel, o nome do organismo nunca sai da vista, e o ciclo entra na
+   rolagem em vez de disputar altura com o texto. */
+@media (max-width: 560px) and (orientation: portrait) {
+  .tutorial-panel--card .tutorial-card-view {
+    --paper-left: 16%;
+    --paper-top: 13%;
+    --paper-width: 68%;
+    --paper-height: 63%;
+  }
+  .tutorial-panel--card .tutorial-paper-content {
+    display: block !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    overscroll-behavior: contain;
+    touch-action: pan-y !important;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(107,73,50,.35) transparent;
+  }
+  /* Um scroller so: o miolo deixa de rolar por dentro do que ja rola por fora. */
+  .tutorial-panel--card .tutorial-page-scroll {
+    overflow: visible !important;
+    touch-action: auto !important;
+  }
+  .tutorial-panel--card .tutorial-header {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 3 !important;
+    padding-bottom: .25em !important;
+    /* A cor sai da propria folha desenhada (#eddab8 amostrado na arte), com uma
+       borda desfocada embaixo para nao aparecer emenda reta sobre a textura. */
+    background: linear-gradient(#eddab8 78%, rgba(237,218,184,0)) !important;
+  }
+  .tutorial-panel--card .tutorial-page { margin-top: .45em !important; }
+  .tutorial-panel--card .tutorial-cycle-block { margin-top: .5em !important; }
+}

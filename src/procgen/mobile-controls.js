@@ -5,11 +5,14 @@ import {
   TUTORIAL_RUNTIME_VERSION,
 } from './tutorial-triggers.js?v=20260727-organic-card-2';
 
+import { isTouchDevice } from './touch-profile.js';
+
 ensureTutorialInterface();
 
-const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
-const compactTouchViewport = window.matchMedia('(max-width: 900px)').matches;
-const touchDevice = coarsePointer || (navigator.maxTouchPoints > 0 && compactTouchViewport);
+// O criterio saiu daqui para `touch-profile.js` porque a camera precisa do
+// MESMO: antes ela usava uma versao mais frouxa e daria perfil de celular a
+// qualquer notebook com tela sensivel.
+const touchDevice = isTouchDevice(window);
 
 const root = document.documentElement;
 const controls = document.getElementById('touch-controls');
