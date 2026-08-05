@@ -739,21 +739,34 @@ test('fósforo: soltar E encerra a carga', () => {
   assert.equal(audio.loops.has('phosphate-charge:player'), false);
 });
 
-test('fósforo: carga insuficiente não dispara som de pulso', () => {
+test('fósforo: carga insuficiente não arma nem dispara som de pulso', () => {
   const { audio, input, phosphate } = phosphateHarness();
   input.keys.KeyE = true;
   phosphate.prepare(0.016); // carga mínima não alcançada
   input.keys.KeyE = false;
+  phosphate.prepare(0.016); // soltar descarta a carga insuficiente
+  assert.equal(audio.countFx('phosphatePulseRelease'), 0);
+  // Um novo toque também não dispara: não há carga armada.
+  input.keys.KeyE = true;
   phosphate.prepare(0.016);
   assert.equal(audio.countFx('phosphatePulseRelease'), 0);
 });
 
-test('fósforo: carga válida dispara o pulso uma vez', () => {
+test('fósforo: soltar a carga não toca som — só o novo toque dispara uma vez', () => {
   const { audio, input, phosphate } = phosphateHarness();
+  // Segurar carrega.
   input.keys.KeyE = true;
   for (let index = 0; index < 40; index++) phosphate.prepare(0.05);
+  // Soltar ARMAZENA: nenhum som de disparo aqui.
   input.keys.KeyE = false;
   phosphate.prepare(0.05);
+  assert.equal(audio.countFx('phosphatePulseRelease'), 0, 'soltar não dispara som');
+  // O novo toque dispara o som exatamente uma vez.
+  input.keys.KeyE = true;
+  phosphate.prepare(0.05);
+  assert.equal(audio.countFx('phosphatePulseRelease'), 1);
+  // Segurar o mesmo toque não repete o som.
+  for (let index = 0; index < 10; index++) phosphate.prepare(0.05);
   assert.equal(audio.countFx('phosphatePulseRelease'), 1);
 });
 

@@ -14,6 +14,8 @@ const initialPlayer = {
   canDash: false,
   canPhosphateSolubilization: false,
   phosphateCharge: 0,
+  // Pulso de fosfato armazenado e pronto para disparar num novo toque.
+  phosphatePulseArmed: false,
   dashTime: 0,
   dashCooldown: 0,
   invuln: 0,

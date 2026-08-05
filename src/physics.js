@@ -49,7 +49,7 @@ export function createPhysicsSystem({ state, input, entities, hud, audio }) {
       color = '#8db8ff';
       player.soil += 9;
       player.hope += 6;
-      hud.setMission('Selecione Solubilização P, carregue perto do Bacillus e solte E na direção do depósito');
+      hud.setMission('Selecione Solubilização P, segure E perto do Bacillus para carregar, solte para guardar e toque E de novo para disparar no depósito');
       entities.discoverMicrobe('phos', false);
     } else if (feature === 'azospirillumRoots') {
       player.soil += 8;

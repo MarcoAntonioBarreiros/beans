@@ -369,6 +369,28 @@ export function createPhosphateSolubilization({
   let solubilizedCount = 0;
   const CHARGE_KEY = 'phosphate-charge:player';
 
+  // Maquina de estados do pulso, em duas etapas.
+  //
+  // Antes o disparo acontecia ao SOLTAR E, o que obrigava a segurar o botao de
+  // acao enquanto se movia, saltava e trocava de plataforma — no celular isso
+  // tornava a travessia inviavel. Agora segurar carrega, soltar armazena, e um
+  // novo toque dispara na direcao atual de Miguelito.
+  //
+  // idle                     -> sem carga; uma nova pressao de E inicia charging
+  // charging                 -> E segurado absorve metabolitos; soltar arma (se
+  //                             >= minimumCharge) ou descarta; nunca dispara
+  // armed                    -> carga guardada; movimento/salto/queda nao a
+  //                             alteram; um NOVO toque dispara
+  // await-release-after-shot -> o mesmo toque que disparou nao recarrega nem
+  //                             redispara; soltar volta a idle. No celular um
+  //                             toque dura varios quadros — sem este estado o
+  //                             mesmo toque dispararia e ja comecaria a carregar
+  const PULSE_IDLE = 'idle';
+  const PULSE_CHARGING = 'charging';
+  const PULSE_ARMED = 'armed';
+  const PULSE_AWAIT_RELEASE = 'await-release-after-shot';
+  let pulseState = PULSE_IDLE;
+
   function settings() {
     return { ...PHOSPHATE_SOLUBILIZATION_DEFAULTS, ...(state.level.phaseProfile?.phosphateSolubilization || {}) };
   }
@@ -410,43 +432,106 @@ export function createPhosphateSolubilization({
     state.player.phosphateCharge = 0;
   }
 
+  // Publica o estado legivel no jogador: a carga guardada e um marcador claro
+  // de "pronto para disparar" para o HUD e o aro.
+  function publishPulse() {
+    state.player.phosphateCharge = charge;
+    state.player.phosphatePulseArmed = pulseState === PULSE_ARMED;
+  }
+
+  // Cancela carga e estado armado SEM disparar.
+  function cancelPulse() {
+    charge = 0;
+    pulseState = PULSE_IDLE;
+  }
+
+  // Absorve metabolitos da colonia madura mais proxima. Devolve `true` somente
+  // quando houve absorcao real neste quadro — e isso que aciona o loop de som e
+  // as particulas, nunca a mera pressao da tecla.
+  function absorbCharge(dt) {
+    const entry = nearestSolubilizer();
+    if (!entry || entry.phosphateMetaboliteReserve <= 0) return false;
+    const config = settings();
+    const gain = dt / Math.max(.1, config.chargeTimeSeconds);
+    const consumed = Math.min(gain, entry.phosphateMetaboliteReserve, config.maximumCharge - charge);
+    if (consumed <= 0) return false;
+    charge = clamp(charge + consumed, 0, config.maximumCharge);
+    entry.phosphateMetaboliteReserve -= consumed;
+    // Uma particula por quadro empilhava tudo na mesma reta, com fase quase
+    // identica: virava um tracejado rigido. Agora saem espacadas no tempo, de
+    // pontos diferentes da colonia e com fase propria.
+    chargeParticleCooldown -= dt;
+    if (chargeParticleCooldown <= 0 && chargeParticles.length < 10) {
+      chargeParticleCooldown = .16;
+      const spread = (Math.random() - .5) * 26;
+      chargeParticles.push({
+        fromX: entry.colony.x + spread,
+        fromY: entry.colony.y + (Math.random() - .5) * 14,
+        progress: 0,
+        speed: .9 + Math.random() * .5,
+        phase: Math.random() * TAU,
+        swing: 7 + Math.random() * 9,
+      });
+    }
+    return true;
+  }
+
   function prepare(dt) {
-    if (state.gameState !== 'play') return;
+    if (state.gameState !== 'play') {
+      // Pausa, tutorial, blur e pointercancel: mantem a borda de entrada
+      // sincronizada com o estado REAL da tecla. Sem isto, uma tecla presa
+      // durante a pausa vira uma borda de subida fantasma ao retomar — e, no
+      // estado armado, essa borda dispararia sozinha ao fechar o tutorial.
+      eHeldLast = Boolean(input?.keys?.KeyE);
+      entities?.audio?.stopLoop(CHARGE_KEY, { fade: .12 });
+      publishPulse();
+      return;
+    }
+
     const held = Boolean(input.keys.KeyE);
-    // A barra so pode SOAR enquanto ela realmente sobe. Segurar E sem
-    // solubilizador por perto, sem reserva ou com a carga no teto nao produz
-    // som nenhum — o loop e o retrato da carga, nao da tecla.
+    const rising = held && !eHeldLast;
     let charging = false;
-    if (selected() && held) {
-      const entry = nearestSolubilizer();
-      if (entry && entry.phosphateMetaboliteReserve > 0) {
-        const config = settings();
-        const gain = dt / Math.max(.1, config.chargeTimeSeconds);
-        const consumed = Math.min(gain, entry.phosphateMetaboliteReserve, config.maximumCharge - charge);
-        charge = clamp(charge + consumed, 0, config.maximumCharge);
-        entry.phosphateMetaboliteReserve -= consumed;
-        charging = consumed > 0;
-        // Uma particula por quadro empilhava tudo na mesma reta, com fase quase
-        // identica: virava um tracejado rigido. Agora saem espacadas no tempo,
-        // de pontos diferentes da colonia e com fase propria.
-        chargeParticleCooldown -= dt;
-        if (consumed > 0 && chargeParticleCooldown <= 0 && chargeParticles.length < 10) {
-          chargeParticleCooldown = .16;
-          const spread = (Math.random() - .5) * 26;
-          chargeParticles.push({
-            fromX: entry.colony.x + spread,
-            fromY: entry.colony.y + (Math.random() - .5) * 14,
-            progress: 0,
-            speed: .9 + Math.random() * .5,
-            phase: Math.random() * TAU,
-            swing: 7 + Math.random() * 9,
-          });
-        }
+
+    if (!selected()) {
+      // Trocar de acao ou perder o desbloqueio cancela sem disparar.
+      cancelPulse();
+    } else {
+      switch (pulseState) {
+        case PULSE_IDLE:
+          if (rising) {
+            pulseState = PULSE_CHARGING;
+            charging = absorbCharge(dt);
+          }
+          break;
+        case PULSE_CHARGING:
+          if (held) {
+            charging = absorbCharge(dt);
+          } else if (charge >= settings().minimumCharge) {
+            // Soltar NUNCA dispara: armazena a carga pronta.
+            pulseState = PULSE_ARMED;
+          } else {
+            // Abaixo do minimo, a carga e descartada.
+            cancelPulse();
+          }
+          break;
+        case PULSE_ARMED:
+          // Movimento, salto, queda e troca de plataforma nao alteram a carga.
+          // So uma nova borda de pressao dispara, na direcao ATUAL do jogador.
+          if (rising) {
+            fireShot();
+            pulseState = PULSE_AWAIT_RELEASE;
+          }
+          break;
+        case PULSE_AWAIT_RELEASE:
+          // O mesmo toque que disparou nao recarrega nem redispara.
+          if (!held) pulseState = PULSE_IDLE;
+          break;
       }
     }
-    // Som centrado (nao espacial): a carga e do jogador, nao do mundo.
-    // `protect` impede o limitador de vozes de derrubar justamente o loop da
-    // acao que o jogador esta executando neste instante.
+
+    // Som centrado (nao espacial): a carga e do jogador, nao do mundo. `protect`
+    // impede o limitador de vozes de derrubar justamente o loop da acao que o
+    // jogador esta executando. No estado armado nao ha loop de carga.
     if (charging) {
       const proporcao = clamp(charge / Math.max(.001, settings().maximumCharge), 0, 1);
       entities?.audio?.startLoop(CHARGE_KEY, 'phosphateCharge', {
@@ -458,10 +543,8 @@ export function createPhosphateSolubilization({
       entities?.audio?.stopLoop(CHARGE_KEY, { fade: .12 });
     }
 
-    if (selected() && !held && eHeldLast) fireShot();
-    if (!selected() && !held) charge = 0;
     eHeldLast = held;
-    state.player.phosphateCharge = charge;
+    publishPulse();
   }
 
   function dissolveWithShot(shot) {
@@ -738,16 +821,20 @@ export function createPhosphateSolubilization({
     entities?.audio?.stopGroup('phosphate-transport');
     charge = 0;
     eHeldLast = false;
+    pulseState = PULSE_IDLE;
     shots = [];
     chargeParticles = [];
     transported = 0;
     solubilizedCount = 0;
     state.player.phosphateCharge = 0;
+    state.player.phosphatePulseArmed = false;
   }
 
   return {
     prepare, update, render, clear, reset: clear,
     get charge() { return charge; },
+    get pulseState() { return pulseState; },
+    get armed() { return pulseState === PULSE_ARMED; },
     get shotCount() { return shots.length; },
     get solubilizedDepositCount() { return solubilizedCount; },
     get transportedPhosphate() { return transported; },

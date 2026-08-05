@@ -1816,7 +1816,11 @@ function loop(now) {
     chips.push({ icon: 'hope', label: 'Esperança', value: Math.round(player.hope) });
     chips.push({ icon: 'exudate', label: 'Exsudatos', value: player.exudates });
     if (player.canPhosphateSolubilization && (!selected || (selected.id !== 'phos' && selected.kind !== 'phos'))) {
-      chips.push({ icon: 'phosphate', label: 'Carga P', value: `${Math.round((player.phosphateCharge || 0) * 100)}%` });
+      // Pulso guardado: o chip vira aviso de "pronto para disparar", em vez de
+      // so mostrar a porcentagem de carga.
+      chips.push(player.phosphatePulseArmed
+        ? { icon: 'phosphate', label: 'Pulso P', value: 'pronto ⟶ E' }
+        : { icon: 'phosphate', label: 'Carga P', value: `${Math.round((player.phosphateCharge || 0) * 100)}%` });
     }
     renderStockChips(chips);
 

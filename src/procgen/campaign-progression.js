@@ -281,7 +281,7 @@ function featurePresentation(feature) {
   if (feature === 'phosphateSolubilization') {
     return {
       name: 'Enzima de solubilização',
-      desc: 'A raiz saudável libera a enzima do pulso: selecione Solubilização P, carregue perto da cepa de Bacillus e solte E para disparar no depósito.',
+      desc: 'A raiz saudável libera a enzima do pulso: selecione Solubilização P, segure E perto da cepa de Bacillus para carregar, solte para guardar e toque E de novo para disparar no depósito.',
     };
   }
   return {

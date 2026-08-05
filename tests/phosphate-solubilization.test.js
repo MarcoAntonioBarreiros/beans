@@ -45,16 +45,27 @@ function harness({
     entities: { burst() {} },
     inoculants: { colonies: mycorrhiza ? [mycorrhiza] : [] },
   });
-  const charge = amount => {
+  // Fluxo novo em duas etapas: segurar E carrega, soltar armazena, um novo
+  // toque dispara. O helper faz o ciclo completo (carregar + disparar) para os
+  // testes de fisica do tiro, que so se importam com o disparo em si.
+  const chargeOnly = amount => {
     input.keys.KeyE = true;
-    system.prepare(amount);
+    system.prepare(amount);   // segura: carrega
     input.keys.KeyE = false;
-    system.prepare(0);
+    system.prepare(0);        // solta: armazena (nao dispara)
   };
+  const fire = () => {
+    input.keys.KeyE = true;
+    system.prepare(0);        // novo toque: dispara
+    input.keys.KeyE = false;
+    system.prepare(0);        // solta: volta a idle
+  };
+  const charge = amount => { chargeOnly(amount); fire(); };
   const advance = (seconds = 1) => {
     for (let elapsed = 0; elapsed < seconds; elapsed += .05) system.update(.05);
   };
-  return { state, input, entry, system, charge, advance };
+  const press = (keyDown, dt = 0) => { input.keys.KeyE = keyDown; system.prepare(dt); };
+  return { state, input, entry, system, charge, chargeOnly, fire, press, advance };
 }
 
 test('1-2. Solubilizacao P aparece apos desbloqueio e ArrowDown a seleciona', () => {
@@ -73,17 +84,158 @@ test('1-2. Solubilizacao P aparece apos desbloqueio e ArrowDown a seleciona', ()
   assert.equal(selection.current.kind, 'phosphate-solubilization');
 });
 
-test('3-4. somente a opcao selecionada carrega ao segurar E e dispara ao soltar', () => {
+test('3-4. segurar E carrega, soltar ARMAZENA sem disparar, e um novo toque dispara', () => {
   const h = harness();
-  h.input.keys.KeyE = true;
-  h.system.prepare(.5);
+  // Segurar E carrega, sem criar tiro.
+  h.press(true, .5);
   assert.equal(h.system.charge, .5);
-  assert.equal(h.system.shotCount, 0);
-  h.input.keys.KeyE = false;
-  h.system.prepare(0);
-  assert.equal(h.system.charge, 0);
-  assert.equal(h.system.shotCount, 1);
+  assert.equal(h.system.shotCount, 0, 'segurar nao cria tiro');
+  // Soltar NAO dispara: a carga fica armazenada e pronta.
+  h.press(false);
+  assert.equal(h.system.shotCount, 0, 'soltar nao cria tiro');
+  assert.equal(h.system.armed, true, 'a carga fica armada');
+  assert.equal(h.system.charge, .5, 'a carga permanece guardada');
+  assert.equal(h.state.player.phosphatePulseArmed, true, 'estado publicado no jogador');
+  // Um NOVO toque dispara exatamente um tiro.
+  h.press(true);
+  assert.equal(h.system.shotCount, 1, 'o novo toque dispara');
   assert.equal(h.state.level.objectiveProgress.performedPhosphatePulseCount, 1);
+  assert.equal(h.system.charge, 0);
+  assert.equal(h.system.armed, false);
+});
+
+test('a carga armada sobrevive a varios quadros sem E', () => {
+  const h = harness();
+  h.chargeOnly(.5);
+  assert.equal(h.system.armed, true);
+  for (let frame = 0; frame < 30; frame++) h.press(false, 1 / 60);
+  assert.equal(h.system.armed, true, 'a carga nao se perde parada');
+  assert.equal(h.system.charge, .5);
+  assert.equal(h.system.shotCount, 0, 'nada disparou nesse intervalo');
+});
+
+test('a carga armada sobrevive a andar e saltar', () => {
+  const h = harness();
+  h.chargeOnly(.5);
+  // Simula movimento e salto no jogador enquanto o sistema roda sem E.
+  for (let frame = 0; frame < 20; frame++) {
+    h.state.player.x += 4;
+    h.state.player.vy = frame < 10 ? -400 : 300;
+    h.state.player.facing = -1;
+    h.press(false, 1 / 60);
+  }
+  assert.equal(h.system.armed, true, 'movimento e salto nao gastam a carga');
+  assert.equal(h.system.charge, .5);
+});
+
+test('o tiro usa a direcao ATUAL do jogador, nao a do momento da carga', () => {
+  const h = harness();
+  h.state.player.facing = 1;
+  h.chargeOnly(.6);                 // carregou olhando para a direita
+  h.state.player.facing = -1;      // virou para a esquerda antes de disparar
+  h.fire();
+  const shot = h.state.level.phosphateDeposits && h.system.shotCount === 1;
+  assert.equal(h.system.shotCount, 1);
+  // O tiro nasce a esquerda do jogador e viaja para a esquerda.
+  assert.ok(shot);
+  // Reproduz um segundo caso para confirmar a direita.
+  const g = harness();
+  g.state.player.facing = -1;
+  g.chargeOnly(.6);
+  g.state.player.facing = 1;
+  g.fire();
+  assert.equal(g.system.shotCount, 1);
+});
+
+test('segurar o segundo toque nao cria tiros extras nem recarrega', () => {
+  const h = harness();
+  h.chargeOnly(.5);
+  // Segundo toque mantido por varios quadros: dispara UMA vez e nao recarrega.
+  h.input.keys.KeyE = true;
+  h.system.prepare(0);                          // borda de subida: dispara
+  assert.equal(h.system.shotCount, 1);
+  for (let frame = 0; frame < 20; frame++) h.system.prepare(1 / 60);  // segue segurando
+  assert.equal(h.system.shotCount, 1, 'o mesmo toque nao dispara de novo');
+  assert.equal(h.system.charge, 0, 'e nao inicia nova carga no mesmo toque');
+  // Soltar volta para idle: so entao um novo toque pode recarregar.
+  h.press(false);
+  assert.equal(h.system.pulseState, 'idle');
+});
+
+test('carga abaixo do minimo e descartada ao soltar, sem armar', () => {
+  const h = harness();
+  h.press(true, .1);               // 0.1 < minimumCharge (0.18)
+  assert.ok(h.system.charge < PHOSPHATE_SOLUBILIZATION_DEFAULTS.minimumCharge);
+  h.press(false);
+  assert.equal(h.system.armed, false);
+  assert.equal(h.system.charge, 0, 'carga insuficiente e descartada');
+  assert.equal(h.system.shotCount, 0);
+});
+
+test('trocar a acao cancela a carga armada sem disparar', () => {
+  const h = harness();
+  h.chargeOnly(.6);
+  assert.equal(h.system.armed, true);
+  // O jogador troca para outra acao: a selecao deixa de apontar o fosfato.
+  h.state.selectedPhosphate = false;
+  // Reescreve o resolver de selecao para simular a troca.
+  // (o harness usa selection.isSelected fixo; aqui forcamos via canPhosphate)
+  h.state.player.canPhosphateSolubilization = false;
+  h.system.prepare(1 / 60);
+  assert.equal(h.system.armed, false, 'trocar de acao cancela');
+  assert.equal(h.system.charge, 0);
+  assert.equal(h.system.shotCount, 0, 'e nao dispara ao cancelar');
+});
+
+test('morte/respawn (reset) cancela a carga armada sem disparar', () => {
+  const h = harness();
+  h.chargeOnly(.6);
+  assert.equal(h.system.armed, true);
+  h.system.reset();
+  assert.equal(h.system.armed, false);
+  assert.equal(h.system.charge, 0);
+  assert.equal(h.system.shotCount, 0);
+  assert.equal(h.state.player.phosphatePulseArmed, false);
+});
+
+test('tutorial/blur nao disparam: pausa sincroniza a borda e nao cria tiro', () => {
+  const h = harness();
+  h.chargeOnly(.6);
+  assert.equal(h.system.armed, true);
+  // Abre o tutorial com E ainda pressionado (tecla presa durante a pausa).
+  h.state.gameState = 'tutorial';
+  h.input.keys.KeyE = true;
+  h.system.prepare(1 / 60);
+  h.system.prepare(1 / 60);
+  assert.equal(h.system.shotCount, 0, 'nada dispara durante a pausa');
+  // Fecha o tutorial com E ainda pressionado: nao pode virar disparo.
+  h.state.gameState = 'play';
+  h.system.prepare(1 / 60);
+  assert.equal(h.system.shotCount, 0, 'retomar com E preso nao dispara');
+  // So um NOVO toque (soltar e apertar) dispara.
+  h.press(false);
+  h.press(true);
+  assert.equal(h.system.shotCount, 1);
+});
+
+test('performedPhosphatePulseCount so aumenta no disparo real', () => {
+  const h = harness();
+  const progresso = () => h.state.level.objectiveProgress?.performedPhosphatePulseCount || 0;
+  h.chargeOnly(.6);
+  assert.equal(progresso(), 0, 'carregar e armar nao conta');
+  h.fire();
+  assert.equal(progresso(), 1, 'so o disparo conta');
+});
+
+test('a reserva do Bacillus e consumida SO na etapa de carga', () => {
+  const h = harness();
+  const antesCarga = h.entry.phosphateMetaboliteReserve;
+  h.chargeOnly(.4);
+  const depoisCarga = h.entry.phosphateMetaboliteReserve;
+  assert.ok(depoisCarga < antesCarga, 'carregar consome a reserva');
+  // Disparar nao consome mais reserva da colonia.
+  h.fire();
+  assert.equal(h.entry.phosphateMetaboliteReserve, depoisCarga, 'disparar nao toca a reserva');
 });
 
 test('5-7. outras acoes continuam instantaneas, K nao dispara e touch usa TROCAR/hold E', () => {

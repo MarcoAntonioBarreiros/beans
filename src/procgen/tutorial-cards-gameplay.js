@@ -193,9 +193,23 @@ export const gameplayTutorialCards = {
     "✦",
     "#ffb15c",
     [
-      page("Selecione o poder", "Escolha Solubilização P no seletor. Somente essa opção transforma o comando E em uma ação de carregar e disparar."),
-      page("Carregue na colônia", "Segure E perto de uma colônia madura da cepa solubilizadora. A carga usa a reserva de metabólitos produzida pela colônia, que se recupera mais rápido quando recebe exsudatos."),
-      page("Mire no depósito", "Solte E para lançar o pulso na direção de Miguelito. O efeito alcança depósitos de fosfato e libera gradualmente o P que estava pouco disponível."),
+      page("Selecione o poder", "Escolha Solubilização P no seletor. Somente essa opção transforma o comando E em uma ação de carregar, guardar e disparar."),
+      page(
+        "Segure para carregar",
+        "Segure E perto de uma colônia madura da cepa solubilizadora para carregar. A carga usa a reserva de metabólitos da colônia, que se recupera mais rápido quando recebe exsudatos.",
+        [
+          "Solte o botão quando a carga estiver pronta.",
+          "O pulso fica guardado: você não perde a carga ao soltar.",
+        ],
+      ),
+      page(
+        "Mova-se e dispare",
+        "Com o pulso guardado, mova-se e mire livremente — andar, saltar e trocar de plataforma não gastam a carga. Toque E novamente para disparar na direção atual de Miguelito.",
+        [
+          "A direção é a que Miguelito olha no momento do disparo.",
+          "O efeito alcança depósitos de fosfato e libera o P pouco disponível.",
+        ],
+      ),
       page(
         "Complete a missão",
         "Solubilizar não significa transportar. O fosfato permanece no local até que uma rede micorrízica funcional o leve ao arbúsculo e à raiz.",
