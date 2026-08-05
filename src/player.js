@@ -52,6 +52,10 @@ const initialPlayer = {
   jetpackConnectionTime: 0,
   jetpackRechargeRoot: null,
   jetpackLockedUntilGround: false,
+  // Gesto de segurar o pulo para pairar: tempo acumulado com o botão de pulo
+  // pressionado no ar. Zera ao soltar ou ao pousar.
+  jumpHoldSeconds: 0,
+  hoverRequested: false,
   // Plataforma que de fato sustentou o último pouso. A recarga usa isto, não
   // proximidade geométrica.
   supportPlatform: null,
@@ -70,6 +74,10 @@ export function resetJetpackRuntime(player) {
   player.jetpackConnectionTime = 0;
   player.jetpackRechargeCap = 0;
   player.jetpackRechargeMultiplier = 1;
+  // O gesto de hover nao pode sobreviver ao respawn: um Space mantido antes de
+  // morrer nao pode reativar hovering na vida nova.
+  player.jumpHoldSeconds = 0;
+  player.hoverRequested = false;
 }
 
 // Desliga a propulsão em curso preservando a energia restante. `lockUntilGround`

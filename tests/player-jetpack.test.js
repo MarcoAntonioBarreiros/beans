@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
+  HOVER_HOLD_SECONDS,
   JETPACK_CONFIG,
   applyJetpackThrust,
   canActivateJetpack,
@@ -854,4 +856,162 @@ test('medicao: a propulsao aumenta altura e alcance de forma monotonica', () => 
   assert.ok(duploCom100.altura > duplo.altura, 'a mochila prolonga tambem o salto duplo');
   assert.ok(com100.energiaGasta > com50.energiaGasta, 'mais tempo de voo gasta mais');
   assert.ok(com100.energiaGasta <= 1.0001, 'nao da para gastar mais do que o tanque');
+});
+
+// ============================================================================
+// SEGURAR O PULO ATIVA O HOVER (Propulsao da Rizosfera)
+// ============================================================================
+// O controle principal passou a ser o botao de pulo: toque curto salta, dois
+// toques curtos dao salto duplo, e segurar no ar (alem do limiar) paira. K/C
+// continuam como atalhos legados. Nenhum numero de forca, energia, consumo ou
+// recarga muda — so a forma de acionar.
+
+test('o limiar de hover esta centrado em 0,18s', () => {
+  assert.ok(HOVER_HOLD_SECONDS >= 0.16 && HOVER_HOLD_SECONDS <= 0.22, `limiar ${HOVER_HOLD_SECONDS}s fora da faixa`);
+  assert.equal(HOVER_HOLD_SECONDS, 0.18);
+});
+
+test('o primeiro toque salta imediatamente, sem esperar o limiar', () => {
+  const sim = simOnRoot(root(), { energy: 1 });
+  stepSeconds(sim, 1 / 60, { Space: true });
+  assert.ok(sim.state.player.vy < 0, 'o salto sai no primeiro frame');
+  assert.equal(sim.state.player.jetpackActive, false, 'sem hover no primeiro frame');
+  assert.equal(sim.state.player.jetpackEnergy, 1, 'o salto nao gasta combustivel de propulsao');
+});
+
+test('um toque curto nao consome energia da propulsao', () => {
+  const sim = simOnRoot(root(), { energy: 1 });
+  stepSeconds(sim, 0.10, { Space: true });
+  stepSeconds(sim, 0.30, {});
+  assert.equal(sim.state.player.jetpackEnergy, 1, 'toque curto nao gasta o tanque');
+  assert.equal(sim.state.player.jetpackActive, false);
+});
+
+test('dois toques curtos dao salto duplo', () => {
+  const sim = simOnRoot(root(), { energy: 0, unlocks: { jetpack: true, doubleJump: true } });
+  stepSeconds(sim, 0.06, { Space: true });
+  stepSeconds(sim, 0.08, {});
+  assert.equal(sim.state.player.airJumpAvailable, true, 'o salto duplo ainda esta disponivel');
+  stepSeconds(sim, 0.06, { Space: true });
+  assert.equal(sim.state.player.airJumpAvailable, false, 'o salto duplo foi consumido');
+  assert.ok(sim.state.player.vy < 0, 'o segundo salto impulsiona para cima');
+});
+
+test('manter o primeiro toque acima do limiar ativa o hover no ar', () => {
+  const sim = simOnRoot(root(), { energy: 1 });
+  stepSeconds(sim, 0.5, { Space: true });
+  assert.equal(sim.state.player.onGround, false, 'esta no ar');
+  assert.equal(sim.state.player.jetpackActive, true, 'segurar o pulo no ar paira');
+  assert.ok(sim.state.player.jetpackEnergy < 1, 'consome energia na taxa atual');
+});
+
+test('manter o segundo toque da salto duplo imediato e depois hover', () => {
+  const sim = simOnRoot(root(), { energy: 1, unlocks: { jetpack: true, doubleJump: true } });
+  stepSeconds(sim, 0.06, { Space: true });
+  stepSeconds(sim, 0.08, {});
+  stepSeconds(sim, 1 / 60, { Space: true });
+  assert.equal(sim.state.player.airJumpAvailable, false, 'salto duplo imediato');
+  const energiaAntes = sim.state.player.jetpackEnergy;
+  stepSeconds(sim, 0.3, { Space: true });
+  assert.equal(sim.state.player.jetpackActive, true, 'depois do limiar, paira');
+  assert.ok(sim.state.player.jetpackEnergy < energiaAntes, 'consome energia');
+});
+
+test('o hover so comeca depois do limiar, nao antes', () => {
+  const sim = simOnRoot(root(), { energy: 1 });
+  stepSeconds(sim, HOVER_HOLD_SECONDS - 0.03, { Space: true });
+  assert.equal(sim.state.player.jetpackActive, false, 'antes do limiar nao paira');
+  stepSeconds(sim, 0.12, { Space: true });
+  assert.equal(sim.state.player.jetpackActive, true, 'depois do limiar paira');
+});
+
+test('o gesto de hover nao acumula no chao', () => {
+  const sim = simOnRoot(root(), { energy: 1 });
+  sim.setInputs({ Space: true });
+  sim.step(1 / 60);
+  assert.ok(sim.state.player.jumpHoldSeconds < HOVER_HOLD_SECONDS, 'no chao o cronometro fica baixo');
+});
+
+test('soltar o pulo interrompe o hover e preserva a energia restante', () => {
+  const sim = simOnRoot(root(), { energy: 1 });
+  stepSeconds(sim, 0.4, { Space: true });
+  assert.equal(sim.state.player.jetpackActive, true);
+  const restante = sim.state.player.jetpackEnergy;
+  assert.ok(restante > 0 && restante < 1, 'sobrou energia');
+  stepSeconds(sim, 1 / 60, {});
+  assert.equal(sim.state.player.jetpackActive, false, 'soltar interrompe');
+  assert.equal(sim.state.player.jetpackEnergy, restante, 'a energia restante e preservada');
+});
+
+test('tanque vazio encerra o hover', () => {
+  const sim = simOnRoot(root(), { energy: 0.05 });
+  stepSeconds(sim, 0.8, { Space: true });
+  assert.equal(sim.state.player.jetpackEnergy, 0);
+  assert.equal(sim.state.player.jetpackActive, false, 'sem energia nao ha propulsao');
+});
+
+test('dash cancela o hover e trava ate pousar', () => {
+  const sim = simOnRoot(root(), { energy: 1, unlocks: { jetpack: true, dash: true } });
+  stepSeconds(sim, 0.4, { Space: true });
+  assert.equal(sim.state.player.jetpackActive, true);
+  stepSeconds(sim, 1 / 60, { Space: true, ShiftLeft: true });
+  assert.equal(sim.state.player.jetpackLockedUntilGround, true, 'dash trava a propulsao');
+  stepSeconds(sim, 0.3, { Space: true });
+  assert.equal(sim.state.player.jetpackActive, false, 'nao paira ate pousar');
+});
+
+test('resetJetpackRuntime zera o gesto de hover (respawn nao o herda)', () => {
+  const p = createPlayer();
+  p.jumpHoldSeconds = 0.5;
+  p.hoverRequested = true;
+  resetJetpackRuntime(p);
+  assert.equal(p.jumpHoldSeconds, 0);
+  assert.equal(p.hoverRequested, false);
+});
+
+test('pausa/tutorial sincroniza a borda: retomar com o pulo preso nao paira sozinho', () => {
+  const sim = simOnRoot(root(), { energy: 1 });
+  stepSeconds(sim, 0.4, { Space: true });
+  assert.equal(sim.state.player.jetpackActive, true);
+  sim.state.gameState = 'tutorial';
+  stepSeconds(sim, 0.2, { Space: true });
+  assert.equal(sim.state.player.jumpHoldSeconds, 0, 'o gesto zera na pausa');
+  assert.equal(sim.state.player.hoverRequested, false);
+  sim.state.gameState = 'play';
+  stepSeconds(sim, 1 / 60, { Space: true });
+  assert.equal(sim.state.player.jetpackActive, false, 'nao paira no primeiro frame apos retomar');
+});
+
+test('K/C continuam como atalhos legados de teclado no ar', () => {
+  const sim = simOnRoot(root(), { energy: 1 });
+  sim.state.player.onGround = false;
+  sim.state.player.y -= 120;
+  stepSeconds(sim, 0.2, { KeyC: true });
+  assert.equal(sim.state.player.jetpackActive, true, 'C ainda aciona a propulsao');
+});
+
+test('nao existe mais botao PROP separado; o pulo e o botao combinado', () => {
+  const index = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(index, /id="touch-jetpack"/, 'o botao PROP foi removido');
+  assert.doesNotMatch(index, /data-key="KeyK"/, 'nao ha botao touch para K');
+  assert.match(index, /id="touch-jump"[^>]*data-key="Space"/, 'o pulo e o botao combinado');
+  assert.doesNotMatch(index, /id="touch-jump"[^>]*data-mode="tap"/, 'o pulo precisa ser hold, nao tap');
+});
+
+test('o aro de energia foi transferido para o botao de pulo', () => {
+  const app = readFileSync(new URL('../src/procgen/app.js', import.meta.url), 'utf8');
+  assert.match(app, /getElementById\('touch-jump'\)/, 'o updater aponta para o botao de pulo');
+  assert.match(app, /classList\.toggle\('jetpack'/, 'o aro (classe jetpack) vai para o pulo');
+  assert.doesNotMatch(app, /getElementById\('touch-jetpack'\)/, 'nao resta referencia ao botao antigo');
+});
+
+test('os textos nao mandam mais "segurar PROPULSOR"', () => {
+  const cards = readFileSync(new URL('../src/procgen/tutorial-cards-gameplay.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(cards, /Segure PROPULSOR/i);
+  assert.match(cards, /Mantenha o bot[aã]o de pulo pressionado/i, 'o card ensina segurar o pulo');
+});
+
+test('a fisica ainda interpreta os atalhos legados K/C', () => {
+  const physics = readFileSync(new URL('../src/physics.js', import.meta.url), 'utf8');
+  assert.match(physics, /keys\.KeyK \|\| keys\.KeyC/, 'K/C continuam como atalhos secundarios');
 });

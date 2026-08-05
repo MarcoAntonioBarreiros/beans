@@ -5,6 +5,7 @@ import { recordPhaseObjectiveAction } from './procgen/campaign-objective-progres
 import { unlockCampaignFeature } from './procgen/campaign-progression.js';
 import { cancelJetpack } from './player.js';
 import {
+  HOVER_HOLD_SECONDS,
   JETPACK_CONFIG,
   applyJetpackThrust,
   canActivateJetpack,
@@ -226,7 +227,18 @@ export function createPhysicsSystem({ state, input, entities, hud, audio }) {
 
   function update(dt) {
     state.time += dt;
-    if (state.gameState !== 'play') return;
+    if (state.gameState !== 'play') {
+      // Pausa, tutorial, cinemática, blur: sincroniza a borda de pulo com o
+      // estado REAL da tecla e zera o gesto de hover. Sem isto, uma tecla de
+      // pulo presa durante a pausa acumularia gesto ou viraria hover/salto ao
+      // retomar.
+      const paused = state.player;
+      const keysNow = input.keys;
+      state.jumpHeldLast = Boolean(keysNow.Space || keysNow.KeyW || keysNow.ArrowUp);
+      paused.jumpHoldSeconds = 0;
+      paused.hoverRequested = false;
+      return;
+    }
 
     const player = state.player;
     const level = state.level;
@@ -240,13 +252,23 @@ export function createPhysicsSystem({ state, input, entities, hud, audio }) {
     const left = keys.ArrowLeft || keys.KeyA;
     const right = keys.ArrowRight || keys.KeyD;
     const jump = keys.Space || keys.KeyW || keys.ArrowUp;
-    // Comando proprio da propulsao. Compartilhar o botao de pulo faria a mochila
-    // queimar combustivel toda vez que o jogador segurasse o pulo.
-    const jetpackHeld = Boolean(keys.KeyK || keys.KeyC);
     const jumpPressed = jump && !state.jumpHeldLast;
     state.jumpHeldLast = jump;
     if (jumpPressed) player.jumpBuffer = .12;
     else player.jumpBuffer = Math.max(0, player.jumpBuffer - dt);
+
+    // Segurar o pulo para pairar. A borda de pressao acima ja criou o buffer,
+    // entao o salto e o salto duplo saem NA HORA — o gesto so mede o TEMPO no
+    // ar. No chao o cronometro fica zerado: uma pressao antiga nao pode ligar o
+    // hover no instante em que o jogador sai de uma borda.
+    if (!jump || player.onGround) player.jumpHoldSeconds = 0;
+    else player.jumpHoldSeconds = (player.jumpHoldSeconds || 0) + dt;
+    const hoverRequested = player.jumpHoldSeconds > HOVER_HOLD_SECONDS;
+    player.hoverRequested = hoverRequested;
+
+    // Controle principal: segurar o pulo. K e C ficam como atalhos legados de
+    // teclado (nunca no celular); a fisica interpreta a mesma intencao.
+    const jetpackHeld = Boolean(keys.KeyK || keys.KeyC || hoverRequested);
     if (player.onGround) {
       player.coyote = .12;
       player.airJumpAvailable = player.canDoubleJump;

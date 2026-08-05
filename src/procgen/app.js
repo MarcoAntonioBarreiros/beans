@@ -597,22 +597,37 @@ function renderObjectives(campaign, evaluator) {
 }
 const dashTouchButton = document.querySelector('[data-key="ShiftLeft"]');
 const selectionTouchButton = document.querySelector('[data-key="ArrowDown"]');
-const jetpackTouchButton = document.getElementById('touch-jetpack');
-
-// O botao PROPULSOR so existe depois do desbloqueio, e o aro dele e o unico
-// indicador de energia (nada de barra grande no HUD). Aqui so mudam CLASSES e a
-// variavel CSS — o HTML do botao nunca e reescrito a cada quadro.
+// O propulsor deixou de ter botao proprio: agora e o MESMO botao de pulo. Toque
+// curto pula, dois toques curtos dao salto duplo, segurar no ar aciona a
+// Propulsao da Rizosfera. Depois do desbloqueio, o aro em volta do botao de pulo
+// e o unico indicador de energia (nada de barra grande no HUD). Aqui so mudam
+// CLASSES, o rotulo e a variavel CSS — o HTML do botao nunca e reescrito.
+const jumpTouchButton = document.getElementById('touch-jump');
+const jumpTouchLabel = jumpTouchButton?.querySelector('.touch-label');
 let lastJetpackClass = '';
 let lastJetpackRatio = -1;
-function updateJetpackTouchButton(player) {
-  if (!jetpackTouchButton) return;
+let jumpButtonHasRing = false;
+function updateJumpTouchButton(player) {
+  if (!jumpTouchButton) return;
   const unlocked = Boolean(player?.canJetpack);
-  if (jetpackTouchButton.hidden === unlocked) jetpackTouchButton.hidden = !unlocked;
+  // Antes do desbloqueio o botao e so PULO, sem aro de energia.
+  if (unlocked !== jumpButtonHasRing) {
+    jumpButtonHasRing = unlocked;
+    jumpTouchButton.classList.toggle('jetpack', unlocked);
+    if (jumpTouchLabel) jumpTouchLabel.textContent = unlocked ? 'PULO · SEGURE' : 'PULO';
+    if (!unlocked) {
+      jumpTouchButton.classList.remove(
+        'jetpack-empty', 'jetpack-partial', 'jetpack-full', 'jetpack-active', 'jetpack-recharging',
+      );
+      lastJetpackClass = '';
+      lastJetpackRatio = -1;
+    }
+  }
   if (!unlocked) return;
 
   const ratio = Math.max(0, Math.min(1, player.jetpackEnergy || 0));
   if (Math.abs(ratio - lastJetpackRatio) > .004) {
-    jetpackTouchButton.style.setProperty('--jetpack-ratio', ratio.toFixed(3));
+    jumpTouchButton.style.setProperty('--jetpack-ratio', ratio.toFixed(3));
     lastJetpackRatio = ratio;
   }
   const recharging = player.onGround
@@ -624,10 +639,10 @@ function updateJetpackTouchButton(player) {
     : ratio >= .999 ? 'jetpack-full'
     : 'jetpack-partial';
   if (nextClass === lastJetpackClass) return;
-  jetpackTouchButton.classList.remove(
+  jumpTouchButton.classList.remove(
     'jetpack-empty', 'jetpack-partial', 'jetpack-full', 'jetpack-active', 'jetpack-recharging',
   );
-  jetpackTouchButton.classList.add(nextClass);
+  jumpTouchButton.classList.add(nextClass);
   lastJetpackClass = nextClass;
 }
 
@@ -1870,7 +1885,7 @@ function loop(now) {
     // Atalho do Phase Lab: window.__ralstoniaLab.spawnFocus({stage:'critical'}) etc.
     if (!window.__ralstoniaLab) window.__ralstoniaLab = ralstoniaControl.lab;
     updateContextPanel(sim.state, nearbyRoot, document.getElementById('hud-context'), sim);
-    updateJetpackTouchButton(player);
+    updateJumpTouchButton(player);
 
     if (showDebug) {
       const logicIndex = currentLogicIndex();

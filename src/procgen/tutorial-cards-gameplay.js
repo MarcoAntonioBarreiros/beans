@@ -117,10 +117,11 @@ export const gameplayTutorialCards = {
       page("Novo movimento", "O segundo salto permite ganhar altura ou corrigir a trajetória quando Miguelito já está no ar. Ele abre rotas que antes pareciam impossíveis."),
       page(
         "Como usar",
-        "Salte normalmente e pressione o botão de pulo outra vez antes de tocar o chão.",
+        "Toque curto no botão de pulo para saltar; dois toques curtos para o salto duplo. Cada toque age na hora.",
         [
-          "Use cedo para ganhar altura.",
+          "Use o segundo salto cedo para ganhar altura.",
           "Use tarde para corrigir uma queda ou alcançar a borda.",
+          "Manter o botão de pulo pressionado no ar aciona a propulsão, quando desbloqueada.",
         ],
       ),
       page("Metáfora biológica", "O salto duplo é uma mecânica de videogame. Ele simboliza as novas possibilidades de exploração criadas quando o sistema radicular desenvolve mais caminhos."),
@@ -164,7 +165,14 @@ export const gameplayTutorialCards = {
     "▲",
     "#8ef0c6",
     [
-      page("Decole com estratégia", "Segure PROPULSOR enquanto estiver no ar para planar ou ganhar altura. A energia é limitada, por isso pulsos curtos costumam render mais distância do que manter o botão pressionado."),
+      page(
+        "Decole com estratégia",
+        "Mantenha o botão de pulo pressionado enquanto estiver no ar para pairar ou ganhar altura. Solte para economizar energia — pulsos curtos costumam render mais distância do que segurar sem parar.",
+        [
+          "Toque curto ainda é só salto.",
+          "É o TEMPO segurando no ar que aciona a propulsão.",
+        ],
+      ),
       page(
         "Recarregue na raiz",
         "Fique apoiado sobre uma raiz elegível. A saúde da raiz define o limite da carga, e organismos benéficos podem acelerar a recarga.",

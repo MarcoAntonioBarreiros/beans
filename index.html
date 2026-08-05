@@ -776,13 +776,13 @@
       <div class="action-stack">
         <button class="touch-key small" data-key="ArrowDown" data-mode="tap" aria-label="Trocar acao">↓ TROCAR</button>
         <button class="touch-key small" data-key="ShiftLeft" data-mode="tap" aria-label="Dash">DASH</button>
-        <!-- Propulsao da Rizosfera. Sem data-mode="tap": precisa ser HOLD, e so
-             aparece depois que a habilidade e desbloqueada. O aro em volta
-             mostra a energia restante via --jetpack-ratio. -->
-        <button class="touch-key small jetpack jetpack-empty" id="touch-jetpack" data-key="KeyK" aria-label="Propulsor" hidden>PROP</button>
       </div>
       <button class="touch-key small" data-key="KeyE" aria-label="Acao selecionada">E<span class="touch-label">AÇÃO</span></button>
-      <button class="touch-key primary" data-key="Space" aria-label="Pular">↑<span class="touch-label">PULO</span></button>
+      <!-- Botao combinado: toque curto pula, dois toques curtos dao salto duplo,
+           e segurar no ar aciona a Propulsao da Rizosfera. Nao ha mais botao
+           PROP separado. Depois do desbloqueio o aro em volta mostra a energia
+           restante via --jetpack-ratio. -->
+      <button class="touch-key primary" id="touch-jump" data-key="Space" aria-label="Pular; segure no ar para pairar">↑<span class="touch-label">PULO</span></button>
     </div>
   </div>
 

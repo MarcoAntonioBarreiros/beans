@@ -45,6 +45,13 @@ export const JETPACK_CONFIG = Object.freeze({
   maximumRechargeHorizontalSpeed: 35,
 });
 
+// Quanto tempo o botão de pulo precisa ficar pressionado, JÁ NO AR, para pedir a
+// Propulsão da Rizósfera. Toque curto = salto; toque curto duplo = salto duplo;
+// segurar além deste limiar = hover. O valor pode ser calibrado entre ~0,16 e
+// ~0,22s; começa centrado em 0,18. Como a borda de pressão cria o salto na hora
+// (jumpBuffer), este limiar NUNCA atrasa o salto nem o salto duplo.
+export const HOVER_HOLD_SECONDS = 0.18;
+
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 // A saúde da raiz decide APENAS o teto de carga, em faixas. Usa a mesma

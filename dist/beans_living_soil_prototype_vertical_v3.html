@@ -1968,18 +1968,18 @@ html.tutorial-open .phase-lab {
       <div class="action-stack">
         <button class="touch-key small" data-key="ArrowDown" data-mode="tap" aria-label="Trocar acao">↓ TROCAR</button>
         <button class="touch-key small" data-key="ShiftLeft" data-mode="tap" aria-label="Dash">DASH</button>
-        <!-- Propulsao da Rizosfera. Sem data-mode="tap": precisa ser HOLD, e so
-             aparece depois que a habilidade e desbloqueada. O aro em volta
-             mostra a energia restante via --jetpack-ratio. -->
-        <button class="touch-key small jetpack jetpack-empty" id="touch-jetpack" data-key="KeyK" aria-label="Propulsor" hidden>PROP</button>
       </div>
       <button class="touch-key small" data-key="KeyE" aria-label="Acao selecionada">E<span class="touch-label">AÇÃO</span></button>
-      <button class="touch-key primary" data-key="Space" aria-label="Pular">↑<span class="touch-label">PULO</span></button>
+      <!-- Botao combinado: toque curto pula, dois toques curtos dao salto duplo,
+           e segurar no ar aciona a Propulsao da Rizosfera. Nao ha mais botao
+           PROP separado. Depois do desbloqueio o aro em volta mostra a energia
+           restante via --jetpack-ratio. -->
+      <button class="touch-key primary" id="touch-jump" data-key="Space" aria-label="Pular; segure no ar para pairar">↑<span class="touch-label">PULO</span></button>
     </div>
   </div>
 
   <script>
-window.__BEANS_BUILD__ = {"commit":"cb02405","subject":"Fase 9: o terceiro objetivo passa a ser cumprido por jogar bem","builtAt":"2026-08-05 00:43"};
+window.__BEANS_BUILD__ = {"commit":"45911e4","subject":"Controle do fosfato: carga armazenada e disparo em novo toque","builtAt":"2026-08-05 00:56"};
 (() => {
 'use strict';
 const __modules = {
@@ -2502,22 +2502,37 @@ function renderObjectives(campaign, evaluator) {
 }
 const dashTouchButton = document.querySelector('[data-key="ShiftLeft"]');
 const selectionTouchButton = document.querySelector('[data-key="ArrowDown"]');
-const jetpackTouchButton = document.getElementById('touch-jetpack');
-
-// O botao PROPULSOR so existe depois do desbloqueio, e o aro dele e o unico
-// indicador de energia (nada de barra grande no HUD). Aqui so mudam CLASSES e a
-// variavel CSS — o HTML do botao nunca e reescrito a cada quadro.
+// O propulsor deixou de ter botao proprio: agora e o MESMO botao de pulo. Toque
+// curto pula, dois toques curtos dao salto duplo, segurar no ar aciona a
+// Propulsao da Rizosfera. Depois do desbloqueio, o aro em volta do botao de pulo
+// e o unico indicador de energia (nada de barra grande no HUD). Aqui so mudam
+// CLASSES, o rotulo e a variavel CSS — o HTML do botao nunca e reescrito.
+const jumpTouchButton = document.getElementById('touch-jump');
+const jumpTouchLabel = jumpTouchButton?.querySelector('.touch-label');
 let lastJetpackClass = '';
 let lastJetpackRatio = -1;
-function updateJetpackTouchButton(player) {
-  if (!jetpackTouchButton) return;
+let jumpButtonHasRing = false;
+function updateJumpTouchButton(player) {
+  if (!jumpTouchButton) return;
   const unlocked = Boolean(player?.canJetpack);
-  if (jetpackTouchButton.hidden === unlocked) jetpackTouchButton.hidden = !unlocked;
+  // Antes do desbloqueio o botao e so PULO, sem aro de energia.
+  if (unlocked !== jumpButtonHasRing) {
+    jumpButtonHasRing = unlocked;
+    jumpTouchButton.classList.toggle('jetpack', unlocked);
+    if (jumpTouchLabel) jumpTouchLabel.textContent = unlocked ? 'PULO · SEGURE' : 'PULO';
+    if (!unlocked) {
+      jumpTouchButton.classList.remove(
+        'jetpack-empty', 'jetpack-partial', 'jetpack-full', 'jetpack-active', 'jetpack-recharging',
+      );
+      lastJetpackClass = '';
+      lastJetpackRatio = -1;
+    }
+  }
   if (!unlocked) return;
 
   const ratio = Math.max(0, Math.min(1, player.jetpackEnergy || 0));
   if (Math.abs(ratio - lastJetpackRatio) > .004) {
-    jetpackTouchButton.style.setProperty('--jetpack-ratio', ratio.toFixed(3));
+    jumpTouchButton.style.setProperty('--jetpack-ratio', ratio.toFixed(3));
     lastJetpackRatio = ratio;
   }
   const recharging = player.onGround
@@ -2529,10 +2544,10 @@ function updateJetpackTouchButton(player) {
     : ratio >= .999 ? 'jetpack-full'
     : 'jetpack-partial';
   if (nextClass === lastJetpackClass) return;
-  jetpackTouchButton.classList.remove(
+  jumpTouchButton.classList.remove(
     'jetpack-empty', 'jetpack-partial', 'jetpack-full', 'jetpack-active', 'jetpack-recharging',
   );
-  jetpackTouchButton.classList.add(nextClass);
+  jumpTouchButton.classList.add(nextClass);
   lastJetpackClass = nextClass;
 }
 
@@ -3775,7 +3790,7 @@ function loop(now) {
     // Atalho do Phase Lab: window.__ralstoniaLab.spawnFocus({stage:'critical'}) etc.
     if (!window.__ralstoniaLab) window.__ralstoniaLab = ralstoniaControl.lab;
     updateContextPanel(sim.state, nearbyRoot, document.getElementById('hud-context'), sim);
-    updateJetpackTouchButton(player);
+    updateJumpTouchButton(player);
 
     if (showDebug) {
       const logicIndex = currentLogicIndex();
@@ -7817,7 +7832,7 @@ function createSimulator({
 Object.assign(__exports, { restoreExudatesAhead, createSimulator });
 },
 "src/physics.js": (__exports, __require) => {
-const { PLAYER_MAX_X, W } = __require("src/core/constants.js");const { clamp, lerp, rects } = __require("src/core/math.js");const { microbeEncounters } = __require("src/data/microbes.js");const { recordPhaseObjectiveAction } = __require("src/procgen/campaign-objective-progress.js");const { unlockCampaignFeature } = __require("src/procgen/campaign-progression.js");const { cancelJetpack } = __require("src/player.js");const { JETPACK_CONFIG, applyJetpackThrust, canActivateJetpack, isJetpackRechargeRoot, jetpackChargeCapFromRootHealth, jetpackConsumptionStep, jetpackRechargeMultiplierForRoot, jetpackRechargeStep, rootHealthForJetpack } = __require("src/player-jetpack.js");
+const { PLAYER_MAX_X, W } = __require("src/core/constants.js");const { clamp, lerp, rects } = __require("src/core/math.js");const { microbeEncounters } = __require("src/data/microbes.js");const { recordPhaseObjectiveAction } = __require("src/procgen/campaign-objective-progress.js");const { unlockCampaignFeature } = __require("src/procgen/campaign-progression.js");const { cancelJetpack } = __require("src/player.js");const { HOVER_HOLD_SECONDS, JETPACK_CONFIG, applyJetpackThrust, canActivateJetpack, isJetpackRechargeRoot, jetpackChargeCapFromRootHealth, jetpackConsumptionStep, jetpackRechargeMultiplierForRoot, jetpackRechargeStep, rootHealthForJetpack } = __require("src/player-jetpack.js");
 function createPhysicsSystem({ state, input, entities, hud, audio }) {
   // Rotação das três variações de coleta de exsudato (Pacote 03). Contador, não
   // sorteio — ver o comentário no ponto de coleta.
@@ -8028,7 +8043,18 @@ function createPhysicsSystem({ state, input, entities, hud, audio }) {
 
   function update(dt) {
     state.time += dt;
-    if (state.gameState !== 'play') return;
+    if (state.gameState !== 'play') {
+      // Pausa, tutorial, cinemática, blur: sincroniza a borda de pulo com o
+      // estado REAL da tecla e zera o gesto de hover. Sem isto, uma tecla de
+      // pulo presa durante a pausa acumularia gesto ou viraria hover/salto ao
+      // retomar.
+      const paused = state.player;
+      const keysNow = input.keys;
+      state.jumpHeldLast = Boolean(keysNow.Space || keysNow.KeyW || keysNow.ArrowUp);
+      paused.jumpHoldSeconds = 0;
+      paused.hoverRequested = false;
+      return;
+    }
 
     const player = state.player;
     const level = state.level;
@@ -8042,13 +8068,23 @@ function createPhysicsSystem({ state, input, entities, hud, audio }) {
     const left = keys.ArrowLeft || keys.KeyA;
     const right = keys.ArrowRight || keys.KeyD;
     const jump = keys.Space || keys.KeyW || keys.ArrowUp;
-    // Comando proprio da propulsao. Compartilhar o botao de pulo faria a mochila
-    // queimar combustivel toda vez que o jogador segurasse o pulo.
-    const jetpackHeld = Boolean(keys.KeyK || keys.KeyC);
     const jumpPressed = jump && !state.jumpHeldLast;
     state.jumpHeldLast = jump;
     if (jumpPressed) player.jumpBuffer = .12;
     else player.jumpBuffer = Math.max(0, player.jumpBuffer - dt);
+
+    // Segurar o pulo para pairar. A borda de pressao acima ja criou o buffer,
+    // entao o salto e o salto duplo saem NA HORA — o gesto so mede o TEMPO no
+    // ar. No chao o cronometro fica zerado: uma pressao antiga nao pode ligar o
+    // hover no instante em que o jogador sai de uma borda.
+    if (!jump || player.onGround) player.jumpHoldSeconds = 0;
+    else player.jumpHoldSeconds = (player.jumpHoldSeconds || 0) + dt;
+    const hoverRequested = player.jumpHoldSeconds > HOVER_HOLD_SECONDS;
+    player.hoverRequested = hoverRequested;
+
+    // Controle principal: segurar o pulo. K e C ficam como atalhos legados de
+    // teclado (nunca no celular); a fisica interpreta a mesma intencao.
+    const jetpackHeld = Boolean(keys.KeyK || keys.KeyC || hoverRequested);
     if (player.onGround) {
       player.coyote = .12;
       player.airJumpAvailable = player.canDoubleJump;
@@ -9146,6 +9182,10 @@ const initialPlayer = {
   jetpackConnectionTime: 0,
   jetpackRechargeRoot: null,
   jetpackLockedUntilGround: false,
+  // Gesto de segurar o pulo para pairar: tempo acumulado com o botão de pulo
+  // pressionado no ar. Zera ao soltar ou ao pousar.
+  jumpHoldSeconds: 0,
+  hoverRequested: false,
   // Plataforma que de fato sustentou o último pouso. A recarga usa isto, não
   // proximidade geométrica.
   supportPlatform: null,
@@ -9164,6 +9204,10 @@ function resetJetpackRuntime(player) {
   player.jetpackConnectionTime = 0;
   player.jetpackRechargeCap = 0;
   player.jetpackRechargeMultiplier = 1;
+  // O gesto de hover nao pode sobreviver ao respawn: um Space mantido antes de
+  // morrer nao pode reativar hovering na vida nova.
+  player.jumpHoldSeconds = 0;
+  player.hoverRequested = false;
 }
 
 // Desliga a propulsão em curso preservando a energia restante. `lockUntilGround`
@@ -9233,6 +9277,13 @@ const JETPACK_CONFIG = Object.freeze({
   // Acima disto o jogador está correndo, e correr cancela a conexão com a raiz.
   maximumRechargeHorizontalSpeed: 35,
 });
+
+// Quanto tempo o botão de pulo precisa ficar pressionado, JÁ NO AR, para pedir a
+// Propulsão da Rizósfera. Toque curto = salto; toque curto duplo = salto duplo;
+// segurar além deste limiar = hover. O valor pode ser calibrado entre ~0,16 e
+// ~0,22s; começa centrado em 0,18. Como a borda de pressão cria o salto na hora
+// (jumpBuffer), este limiar NUNCA atrasa o salto nem o salto duplo.
+const HOVER_HOLD_SECONDS = 0.18;
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
@@ -9393,7 +9444,7 @@ function canActivateJetpack(player, state) {
     && player.dashTime <= 0,
   );
 }
-Object.assign(__exports, { JETPACK_CONFIG, jetpackChargeCapFromRootHealth, isJetpackRechargeRoot, rootHealthForJetpack, jetpackRechargeMultiplierForRoot, jetpackRechargeBonuses, jetpackRechargeStep, jetpackConsumptionStep, applyJetpackThrust, canActivateJetpack });
+Object.assign(__exports, { JETPACK_CONFIG, HOVER_HOLD_SECONDS, jetpackChargeCapFromRootHealth, isJetpackRechargeRoot, rootHealthForJetpack, jetpackRechargeMultiplierForRoot, jetpackRechargeBonuses, jetpackRechargeStep, jetpackConsumptionStep, applyJetpackThrust, canActivateJetpack });
 },
 "src/procgen/microbe-roaming.js": (__exports, __require) => {
 const { organismVerticalBounds } = __require("src/procgen/world-bounds.js");const { H } = __require("src/core/constants.js");const { createMicrobeEcology, MICROBE_MOTION_PROFILES } = __require("src/procgen/microbe-ecology.js");
@@ -49547,10 +49598,11 @@ const gameplayTutorialCards = {
       page("Novo movimento", "O segundo salto permite ganhar altura ou corrigir a trajetória quando Miguelito já está no ar. Ele abre rotas que antes pareciam impossíveis."),
       page(
         "Como usar",
-        "Salte normalmente e pressione o botão de pulo outra vez antes de tocar o chão.",
+        "Toque curto no botão de pulo para saltar; dois toques curtos para o salto duplo. Cada toque age na hora.",
         [
-          "Use cedo para ganhar altura.",
+          "Use o segundo salto cedo para ganhar altura.",
           "Use tarde para corrigir uma queda ou alcançar a borda.",
+          "Manter o botão de pulo pressionado no ar aciona a propulsão, quando desbloqueada.",
         ],
       ),
       page("Metáfora biológica", "O salto duplo é uma mecânica de videogame. Ele simboliza as novas possibilidades de exploração criadas quando o sistema radicular desenvolve mais caminhos."),
@@ -49594,7 +49646,14 @@ const gameplayTutorialCards = {
     "▲",
     "#8ef0c6",
     [
-      page("Decole com estratégia", "Segure PROPULSOR enquanto estiver no ar para planar ou ganhar altura. A energia é limitada, por isso pulsos curtos costumam render mais distância do que manter o botão pressionado."),
+      page(
+        "Decole com estratégia",
+        "Mantenha o botão de pulo pressionado enquanto estiver no ar para pairar ou ganhar altura. Solte para economizar energia — pulsos curtos costumam render mais distância do que segurar sem parar.",
+        [
+          "Toque curto ainda é só salto.",
+          "É o TEMPO segurando no ar que aciona a propulsão.",
+        ],
+      ),
       page(
         "Recarregue na raiz",
         "Fique apoiado sobre uma raiz elegível. A saúde da raiz define o limite da carga, e organismos benéficos podem acelerar a recarga.",

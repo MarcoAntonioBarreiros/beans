@@ -238,24 +238,23 @@ test('a reserva do Bacillus e consumida SO na etapa de carga', () => {
   assert.equal(h.entry.phosphateMetaboliteReserve, depoisCarga, 'disparar nao toca a reserva');
 });
 
-test('5-7. outras acoes continuam instantaneas, K nao dispara e touch usa TROCAR/hold E', () => {
+test('5-7. K nao dispara o pulso e o E touch e hold (carregar/disparar), nao tap', () => {
   const h = harness();
+  // K/C sao atalhos legados do propulsor: nunca disparam o pulso de fosfato.
   h.input.keys.KeyK = true;
   h.system.prepare(1);
   assert.equal(h.system.charge, 0);
   assert.equal(h.system.shotCount, 0);
+
   const index = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   assert.match(index, /data-key="ArrowDown"[^>]*>↓ TROCAR/);
-  // K deixou de ser tecla morta: agora e o PROPULSOR (Propulsao da Rizosfera).
-  // O que este teste protege continua igual — K nao pode disparar o pulso de
-  // solubilizacao (verificado acima, com charge/shotCount em zero). O que muda e
-  // que o unico botao ligado a K precisa ser o do propulsor, em modo HOLD.
-  const botoesComK = index.match(/<button[^>]*data-key="KeyK"[^>]*>/g) || [];
-  assert.equal(botoesComK.length, 1, 'so o propulsor pode usar K');
-  assert.match(botoesComK[0], /id="touch-jetpack"/);
-  assert.doesNotMatch(botoesComK[0], /data-mode="tap"/, 'o propulsor precisa ser hold, nao tap');
+  // O botao E precisa ser HOLD: carregar exige segurar, e o novo toque dispara.
   assert.match(index, /data-key="KeyE" aria-label=/);
   assert.doesNotMatch(index, /data-key="KeyE"[^>]*data-mode="tap"/);
+  // O propulsor deixou de ter botao proprio no celular — nao ha mais botao K.
+  assert.doesNotMatch(index, /data-key="KeyK"/, 'nao existe mais botao PROP separado');
+  assert.doesNotMatch(index, /id="touch-jetpack"/);
+
   const selectionSource = readFileSync(new URL('../src/procgen/inoculum-selection.js', import.meta.url), 'utf8');
   assert.match(selectionSource, /kind: 'exudate'/);
   assert.match(selectionSource, /kind: 'organism'/);
