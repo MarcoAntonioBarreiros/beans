@@ -1140,6 +1140,16 @@ html.tutorial-open .phase-lab {
   .tutorial-panel--card .tutorial-cycle-label { margin-bottom: .25em !important; }
   .tutorial-panel--card .tutorial-subtitle { width: 96% !important; }
   .tutorial-panel--card .tutorial-page-points { margin-top: .45em !important; gap: 4px !important; }
+
+  /* Contraste no papel: em telas pequenas os tons medios de verde/marrom
+     perdiam leitura sobre o creme da folha (#eddab8). Escurecidos aqui
+     mantendo o MESMO matiz — o desktop (que voce aprovou) fica intacto. */
+  .tutorial-panel--card .tutorial-title,
+  .tutorial-panel--card .tutorial-page-title { color: #435f28 !important; }
+  .tutorial-panel--card .tutorial-cycle-link { color: #4e612d !important; }
+  .tutorial-panel--card .tutorial-subtitle { color: #4c3525 !important; }
+  /* Titulo um pouco mais baixo dentro da folha, sem colar na borda de cima. */
+  .tutorial-panel--card .tutorial-title { margin-top: .38em !important; }
 }
 
 /* CELULAR EM PE — o caso mais apertado, e o unico que muda de estrategia.

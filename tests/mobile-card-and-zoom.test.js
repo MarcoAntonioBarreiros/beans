@@ -202,6 +202,17 @@ test('a area util do cartao cresce em tela pequena, e o desktop fica como estava
   assert.match(pequeno, /--paper-height: 60%/);
 });
 
+test('no celular o texto do papel escurece (mantendo o matiz) e o titulo desce', () => {
+  // Desktop mantem o verde medio aprovado.
+  assert.ok(regra('.tutorial-panel--card .tutorial-title').includes('#5f8739'), 'desktop inalterado');
+  const pequeno = CSS.slice(CSS.indexOf('@media (max-width: 900px), (max-height: 560px)'));
+  // No creme (#eddab8) o verde medio perdia contraste: mobile usa um verde mais escuro.
+  assert.match(pequeno, /\.tutorial-title[\s\S]*?#435f28/, 'titulo do papel nao escureceu no mobile');
+  assert.match(pequeno, /\.tutorial-cycle-link[\s\S]*?#4e612d/, 'link do ciclo nao escureceu no mobile');
+  // Titulo um pouco mais baixo dentro da folha.
+  assert.match(pequeno, /\.tutorial-panel--card \.tutorial-title \{ margin-top: \.38em/, 'titulo nao desceu');
+});
+
 test('trocar de pagina devolve a rolagem ao topo', () => {
   const manager = source('src/procgen/tutorial-manager.js');
   assert.match(manager, /const pageScroll = mount\.querySelector\('\.tutorial-page-scroll'\);/);
