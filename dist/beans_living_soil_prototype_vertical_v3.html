@@ -1989,7 +1989,7 @@ html.tutorial-open .phase-lab {
   </div>
 
   <script>
-window.__BEANS_BUILD__ = {"commit":"f59f498","subject":"Controles: manter pulo ativa o hovering","builtAt":"2026-08-07 00:54"};
+window.__BEANS_BUILD__ = {"commit":"3e08f21","subject":"Cartão mobile: texto do papel ganha contraste e título desce","builtAt":"2026-08-07 16:58"};
 (() => {
 'use strict';
 const __modules = {
@@ -2850,8 +2850,17 @@ function prepareLevel() {
     campaign.phase,
     getPhaseManifest(campaign.phase)?.mycorrhizaBridge,
   );
+  // As geometrias autorais das fases 5 e 6 movem x/y/w/h das plataformas, mas nao
+  // movem checkpoints/exsudatos/etc. presos a elas. Captura o vinculo ANTES
+  // (quando ainda esta correto) e re-sincroniza DEPOIS, para as entidades
+  // acompanharem a superficie nova em vez de guardarem coordenadas antigas — que
+  // o anchor registry posterior capturaria como se fossem corretas. Sincroniza
+  // apenas referencias ainda existentes; nao ressuscita entidades removidas.
+  const phaseGeometryAnchors = createRouteAnchorRegistry(levelData);
+  phaseGeometryAnchors.capture();
   applyPhaseFiveTutorialGeometry(levelData, campaign.phase);
   applyPhaseSixTutorialGeometry(levelData, campaign.phase);
+  phaseGeometryAnchors.synchronize();
   levelData = decorateCampaignLevel(levelData, campaign, profile);
   applyPhaseOneVerticalSlice(levelData, campaign.phase);
   traceGeometry('decorateCampaignLevel');
@@ -3607,6 +3616,14 @@ function maybeAnnounceTraversalEncounter() {
 }
 
 function renderWorld() {
+  // Limpeza defensiva em coordenadas de TELA, antes de qualquer zoom/camera:
+  // garante que nenhum quadro residual sobreviva na faixa que o fundo do mundo
+  // nao cobrir. Precisa vir ANTES de cameraView.apply — depois do zoom, um
+  // clearRect(0,0,canvas.width,canvas.height) nao cobriria a tela inteira.
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
   ctx.save();
   try {
     cameraView.apply(ctx);
@@ -10502,7 +10519,20 @@ function createMicrobeEcology({ state, entities }) {
     const rnd = seededRandom(hashSeed(`${zone.id}:${Math.round(zone.x)}:${Math.round(zone.y)}:${zone.index}`));
     // Ver `organismVerticalBounds`: o teto vem da geometria, não da tela.
     const vertical = organismVerticalBounds(state.level, { topMargin: 95, bottomMargin: 100 });
-    const homeY = clamp(zone.y - 32, vertical.minY, vertical.maxY);
+    // Para a micorriza a casa espacial e a raiz colonizada (via myceliumAnchor),
+    // nao a coordenada da zona: o propagulo ja nasce perto do micelio, em vez de
+    // nascer longe e migrar lentamente ate a hifa. Sem raiz valida, mantem o
+    // comportamento padrao em torno de zone.y.
+    let spawnX = zone.x;
+    let homeY = clamp(zone.y - 32, vertical.minY, vertical.maxY);
+    if (zone.id === 'myco') {
+      const anchor = ensureMyceliumAnchor(state, zone);
+      if (anchor) {
+        const point = myceliumPoint(anchor);
+        spawnX = point.x;
+        homeY = point.y - 34;
+      }
+    }
 
     for (let i = 0; i < count; i++) {
       const angle = rnd() * TAU;
@@ -10512,10 +10542,10 @@ function createMicrobeEcology({ state, entities }) {
         id: `${zone.index}:${i}`,
         type: zone.id,
         zoneIndex: zone.index,
-        homeX: zone.x,
+        homeX: spawnX,
         homeY,
         radius: zone.r || profile.radius,
-        x: zone.x + Math.cos(angle) * radius,
+        x: spawnX + Math.cos(angle) * radius,
         y: clamp(homeY + Math.sin(angle) * radius * .62, Math.min(70, vertical.minY), H - 70),
         vx: Math.cos(direction) * profile.speed * (.45 + rnd() * .35),
         vy: Math.sin(direction) * profile.speed * (.35 + rnd() * .25),
@@ -10767,7 +10797,11 @@ function createMicrobeEcology({ state, entities }) {
       for (const point of agent.trail) point.life -= dt * 2.1;
       while (agent.trail.length && agent.trail[0].life <= 0) agent.trail.shift();
 
-      if (zone && state.discoveredMicrobes.has(zone.id)) {
+      // A micorriza estabelecida tem a casa espacial no myceliumAnchor/raiz (ver
+      // o bloco `myceliumZone` acima). Este ajuste generico usa zone.y e NAO pode
+      // sobrescrever o homeY da micorriza — puxaria o esporo de volta para longe
+      // do micelio.
+      if (zone && state.discoveredMicrobes.has(zone.id) && agent.type !== 'myco') {
         const homeBounds = organismVerticalBounds(state.level, { topMargin: 90, bottomMargin: 90 });
         agent.homeY = lerp(agent.homeY, clamp(zone.y - 18, homeBounds.minY, homeBounds.maxY), dt * .08);
       }
@@ -10775,12 +10809,31 @@ function createMicrobeEcology({ state, entities }) {
   }
 
   function drawLabel(ctx, zone) {
-    const px = state.player.x + state.player.w / 2;
-    const py = state.player.y + state.player.h / 2;
-    if (Math.hypot(zone.x - px, zone.y - py) > 230) return;
     const profile = MICROBE_MOTION_PROFILES[zone.id];
     const catalog = microbeCatalog[zone.id];
     if (!profile || !catalog) return;
+    // Centro visual dos agentes que ainda pertencem a comunidade LOCAL: exclui os
+    // recrutados que sairam com Miguelito (Trichoderma via recruitedUntil, outros
+    // via beneficialRecruitedUntil). Assim o nome identifica a comunidade real e
+    // nao fica sozinho na coordenada vazia da zona quando os agentes migram. E
+    // generico — vale para qualquer comunidade movel, sem if de coordenada.
+    let sumX = 0;
+    let sumY = 0;
+    let local = 0;
+    for (const agent of ecology.agents) {
+      if (agent.zoneIndex !== zone.index) continue;
+      if ((agent.recruitedUntil || 0) > state.time) continue;
+      if ((agent.beneficialRecruitedUntil || 0) > state.time) continue;
+      sumX += agent.x;
+      sumY += agent.y;
+      local++;
+    }
+    if (!local) return; // a comunidade nao esta mais aqui: sem label solto
+    const cx = sumX / local;
+    const cy = sumY / local;
+    const px = state.player.x + state.player.w / 2;
+    const py = state.player.y + state.player.h / 2;
+    if (Math.hypot(cx - px, cy - py) > 230) return;
     const known = state.discoveredMicrobes.has(zone.id);
     const text = known ? catalog.name : 'Comunidade microbiana móvel';
     ctx.save();
@@ -10789,10 +10842,8 @@ function createMicrobeEcology({ state, entities }) {
     ctx.shadowBlur = 10;
     ctx.shadowColor = profile.color;
     ctx.fillStyle = known ? '#effff6' : '#d2e4dc';
-    // O nome identifica a comunidade inteira, não um agente isolado. Mantê-lo
-    // no centro do encontro evita confusão com os rótulos inferiores dos
-    // inóculos, que pertencem a outro sistema.
-    ctx.fillText(text, zone.x, zone.y);
+    // O nome identifica a comunidade inteira, sobre o centro visual dela.
+    ctx.fillText(text, cx, cy - 6);
     ctx.restore();
   }
 
@@ -14872,7 +14923,7 @@ function createTrichodermaGrowth({ state, entities, ecology, colonies }) {
 Object.assign(__exports, { createTrichodermaGrowth });
 },
 "src/procgen/trichoderma-recruitment.js": (__exports, __require) => {
-const { H } = __require("src/core/constants.js");
+const { organismVerticalBounds } = __require("src/procgen/world-bounds.js");
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 function createTrichodermaRecruitment({ state, ecology, entities }) {
@@ -14957,6 +15008,9 @@ function createTrichodermaRecruitment({ state, ecology, entities }) {
     const followers = recruitedAgents();
     const playerX = state.player.x + state.player.w / 2;
     const playerY = state.player.y + state.player.h / 2;
+    // Teto/piso da escolta vem da geometria real (como nos outros sistemas), nao
+    // do antigo limite absoluto de tela 64..H-70.
+    const bounds = organismVerticalBounds(state.level);
 
     followers.forEach((agent, index) => {
       agent.followSlot = index;
@@ -14968,7 +15022,7 @@ function createTrichodermaRecruitment({ state, ecology, entities }) {
       const row = Math.floor(index / 2);
       const side = index % 2 ? 1 : -1;
       const targetX = playerX - state.player.facing * (74 + row * 26) + side * (24 + row * 6);
-      const targetY = clamp(playerY - 48 - row * 24 + Math.sin(state.time * 2.1 + index) * 12, 64, H - 70);
+      const targetY = clamp(playerY - 48 - row * 24 + Math.sin(state.time * 2.1 + index) * 12, bounds.minY, bounds.maxY);
       const dx = targetX - agent.x;
       const dy = targetY - agent.y;
       const distance = Math.max(1, Math.hypot(dx, dy));
@@ -15292,7 +15346,7 @@ function createTrichodermaColonies({ state, input, ecology, entities }) {
 Object.assign(__exports, { createTrichodermaColonies });
 },
 "src/procgen/beneficial-inoculants.js": (__exports, __require) => {
-const { organismVerticalBounds } = __require("src/procgen/world-bounds.js");const { H, W } = __require("src/core/constants.js");const { drawInoculatedBacillusSprite, isBacillusSpriteEnabled } = __require("src/render/bacillus-sprite.js");const { organismSprites } = __require("src/render/organism-sprites.js");const { COLONY_ESTABLISHMENT_GROWTH } = __require("src/audio-manifest.js");
+const { organismVerticalBounds } = __require("src/procgen/world-bounds.js");const { MICROBE_MOTION_PROFILES } = __require("src/procgen/microbe-ecology.js");const { H, W } = __require("src/core/constants.js");const { drawInoculatedBacillusSprite, isBacillusSpriteEnabled } = __require("src/render/bacillus-sprite.js");const { organismSprites } = __require("src/render/organism-sprites.js");const { COLONY_ESTABLISHMENT_GROWTH } = __require("src/audio-manifest.js");
 const TAU = Math.PI * 2;
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
@@ -15796,27 +15850,41 @@ function createBeneficialInoculants({ state, input, ecology, entities }) {
     for (const colony of colonies) updateColony(colony, dt);
   }
 
+  // Linguagem visual unica de "organismo capturado/recrutado": tracejado ligando
+  // o agente a Miguelito e um anel pulsante em volta dele. Reutilizada por todos
+  // os recrutados — beneficos E Trichoderma — para que o feedback seja o mesmo.
+  function drawRecruitmentHalo(ctx, agent, color, playerX, playerY) {
+    const seed = agent.noiseSeed ?? agent.phase ?? 0;
+    ctx.strokeStyle = `${color}66`;
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([3, 7]);
+    ctx.beginPath();
+    ctx.moveTo(agent.x, agent.y);
+    ctx.quadraticCurveTo((agent.x + playerX) / 2, Math.min(agent.y, playerY) - 22, playerX, playerY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = .65;
+    ctx.beginPath();
+    ctx.arc(agent.x, agent.y, 12 + Math.sin(state.time * 3 + seed) * 2, 0, TAU);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
   function drawFollowerTrails(ctx) {
-    const recruited = followers();
-    if (!recruited.length) return;
     const playerX = state.player.x + state.player.w / 2;
     const playerY = state.player.y + state.player.h / 2;
-    for (const agent of recruited) {
-      const profile = PROFILES[agent.type];
-      ctx.strokeStyle = `${profile.color}66`;
-      ctx.lineWidth = 1.2;
-      ctx.setLineDash([3, 7]);
-      ctx.beginPath();
-      ctx.moveTo(agent.x, agent.y);
-      ctx.quadraticCurveTo((agent.x + playerX) / 2, Math.min(agent.y, playerY) - 22, playerX, playerY);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.strokeStyle = profile.color;
-      ctx.globalAlpha = .65;
-      ctx.beginPath();
-      ctx.arc(agent.x, agent.y, 12 + Math.sin(state.time * 3 + agent.noiseSeed) * 2, 0, TAU);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
+    // Organismos beneficos recrutados por este sistema.
+    for (const agent of followers()) {
+      drawRecruitmentHalo(ctx, agent, PROFILES[agent.type].color, playerX, playerY);
+    }
+    // Trichoderma recrutado vive em trichoderma-recruitment.js (recruitedUntil),
+    // fora do sistema benefico, mas o feedback de recrutamento e comum. Enquanto
+    // ataca (hyphalAttack) mantem apenas o proprio ring de ataque, intocado.
+    for (const agent of ecology.agents) {
+      if (agent.type !== 'trichoderma') continue;
+      if ((agent.recruitedUntil || 0) <= state.time || agent.hyphalAttack) continue;
+      drawRecruitmentHalo(ctx, agent, MICROBE_MOTION_PROFILES.trichoderma.color, playerX, playerY);
     }
   }
 
@@ -24029,10 +24097,20 @@ function createEcologicalGameplay({ state, input, entities, ecology, pathogenPre
     ctx.globalAlpha = 1;
   }
 
+  // Fonte unica de posicao do biofilme: quando ele pertence a um checkpoint,
+  // deriva de checkpoint.x/y no momento do render, em vez de depender da copia
+  // film.x/film.y que so e sincronizada quando gameplay.update() roda. Assim a
+  // elipse grande do checkpoint nunca fica presa a uma posicao antiga.
+  function biofilmPosition(film) {
+    if (film.checkpoint) return { x: film.checkpoint.x, y: film.checkpoint.y + 8 };
+    return { x: film.x, y: film.y };
+  }
+
   function drawBiofilm(ctx, film) {
-    const pulse = 1 + Math.sin(state.time * 1.8 + film.x * .01) * .04;
+    const { x: fx, y: fy } = biofilmPosition(film);
+    const pulse = 1 + Math.sin(state.time * 1.8 + fx * .01) * .04;
     ctx.save();
-    ctx.translate(film.x, film.y);
+    ctx.translate(fx, fy);
     ctx.scale(pulse, pulse * .62);
     const radius = film.radius * film.growth;
     const matrix = ctx.createRadialGradient(0, 0, 4, 0, 0, radius);
@@ -28581,8 +28659,12 @@ function platformForChunk(platforms, chunkIndex) {
 function zonePosition(platform, random) {
   const lateral = (random() - .5) * Math.min(platform.w * .28, 54);
   return {
+    // A posicao sai da propria plataforma. O antigo `Math.max(95, ...)` era um
+    // teto de screen-space do mundo de uma tela: em rotas que sobem para Y
+    // negativo ele prendia o encontro em y>=95 enquanto a raiz/hifas
+    // acompanhavam a geometria, separando o esporo do micelio.
     x: platform.x + platform.w / 2 + lateral,
-    y: Math.max(95, platform.y - 88 - random() * 42),
+    y: platform.y - 88 - random() * 42,
   };
 }
 
@@ -29848,12 +29930,21 @@ function platformAt(level, chunk) {
 function addExudate(level, chunk, lateral = .5) {
   const platform = platformAt(level, chunk);
   if (!platform) return;
-  const duplicate = (level.exudates || []).some(item => item.logicIndex === chunk);
-  if (duplicate) return;
+  const x = platform.x + platform.w * lateral;
+  const y = platform.y - 34;
+  // Se ja existe um exsudato neste chunk, ele pode ter sido criado antes de a
+  // plataforma ser movida pela geometria autoral: reposiciona na superficie
+  // atual em vez de retornar cedo e conservar x/y antigos.
+  const existing = (level.exudates || []).find(item => item.logicIndex === chunk);
+  if (existing) {
+    existing.x = x;
+    existing.y = y;
+    return;
+  }
   level.exudates.push({
     logicIndex: chunk,
-    x: platform.x + platform.w * lateral,
-    y: platform.y - 34,
+    x,
+    y,
     taken: false,
     authored: true,
   });
@@ -40638,18 +40729,20 @@ function createRenderer({
     const zoom = Math.max(.01, Number(state.cameraZoom) || 1);
     const viewportWidth = (canvas.width || W) / zoom;
     const viewportHeight = (canvas.height || H) / zoom;
-    const cameraX = state.cameraX || 0;
     const cameraY = state.cameraY || 0;
     const g = ctx.createLinearGradient(0, cameraY, 0, cameraY + viewportHeight);
     g.addColorStop(0, '#0d2f37');
     g.addColorStop(.45, '#10262e');
     g.addColorStop(1, '#170f1b');
     ctx.fillStyle = g;
-    // O fundo fica ancorado ao viewport. Como a transformacao vertical da
-    // camera ja esta aplicada ao contexto, somar cameraY aqui a cancela e evita
-    // revelar a borda superior da imagem em trechos que sobem acima de y=0. O
-    // mesmo vale no eixo X, onde a translacao e feita por cada sistema.
-    ctx.fillRect(cameraX, cameraY, viewportWidth, viewportHeight);
+    // O fundo fica ancorado ao viewport. No eixo Y a transformacao vertical da
+    // camera ja esta aplicada ao contexto, entao somar cameraY aqui a cancela e
+    // evita revelar a borda superior em trechos que sobem acima de y=0. No eixo
+    // X, porem, este render NAO tem `-cameraX` aplicado (a translacao horizontal
+    // e feita dentro de drawWorld, depois): preencher a partir de cameraX deixava
+    // a faixa [0, cameraX] descoberta a esquerda quando cameraX > 0, e os quadros
+    // antigos apareciam ali como fantasma. Ancorado em x=0.
+    ctx.fillRect(0, cameraY, viewportWidth, viewportHeight);
     rhizosphereBackdrop.render(ctx, parallaxCamera, parallaxViewport);
     parallaxBackground.render(ctx, parallaxCamera, parallaxViewport);
   }
@@ -42348,9 +42441,11 @@ function createRhizosphereBackdrop({
     veil.addColorStop(0.58, 'rgba(3,18,25,.34)');
     veil.addColorStop(1, 'rgba(10,8,18,.56)');
     ctx.fillStyle = veil;
-    // Ancorado na camera, nao em x=0: o veu acompanha o trecho visivel.
-    const cameraX = Number(camera.cameraX) || 0;
-    ctx.fillRect(cameraX, cameraY, width, height);
+    // O veu cobre o viewport inteiro. Este render NAO tem `-cameraX` aplicado ao
+    // contexto (o parallax dos tiles ja calcula seu proprio deslocamento), entao
+    // ancorar o retangulo em cameraX deixava a faixa [0, cameraX] descoberta a
+    // esquerda quando cameraX > 0. Ancorado em x=0.
+    ctx.fillRect(0, cameraY, width, height);
     ctx.restore();
     return true;
   }

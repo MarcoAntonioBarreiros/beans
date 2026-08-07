@@ -428,7 +428,20 @@ export function createMicrobeEcology({ state, entities }) {
     const rnd = seededRandom(hashSeed(`${zone.id}:${Math.round(zone.x)}:${Math.round(zone.y)}:${zone.index}`));
     // Ver `organismVerticalBounds`: o teto vem da geometria, não da tela.
     const vertical = organismVerticalBounds(state.level, { topMargin: 95, bottomMargin: 100 });
-    const homeY = clamp(zone.y - 32, vertical.minY, vertical.maxY);
+    // Para a micorriza a casa espacial e a raiz colonizada (via myceliumAnchor),
+    // nao a coordenada da zona: o propagulo ja nasce perto do micelio, em vez de
+    // nascer longe e migrar lentamente ate a hifa. Sem raiz valida, mantem o
+    // comportamento padrao em torno de zone.y.
+    let spawnX = zone.x;
+    let homeY = clamp(zone.y - 32, vertical.minY, vertical.maxY);
+    if (zone.id === 'myco') {
+      const anchor = ensureMyceliumAnchor(state, zone);
+      if (anchor) {
+        const point = myceliumPoint(anchor);
+        spawnX = point.x;
+        homeY = point.y - 34;
+      }
+    }
 
     for (let i = 0; i < count; i++) {
       const angle = rnd() * TAU;
@@ -438,10 +451,10 @@ export function createMicrobeEcology({ state, entities }) {
         id: `${zone.index}:${i}`,
         type: zone.id,
         zoneIndex: zone.index,
-        homeX: zone.x,
+        homeX: spawnX,
         homeY,
         radius: zone.r || profile.radius,
-        x: zone.x + Math.cos(angle) * radius,
+        x: spawnX + Math.cos(angle) * radius,
         y: clamp(homeY + Math.sin(angle) * radius * .62, Math.min(70, vertical.minY), H - 70),
         vx: Math.cos(direction) * profile.speed * (.45 + rnd() * .35),
         vy: Math.sin(direction) * profile.speed * (.35 + rnd() * .25),
@@ -693,7 +706,11 @@ export function createMicrobeEcology({ state, entities }) {
       for (const point of agent.trail) point.life -= dt * 2.1;
       while (agent.trail.length && agent.trail[0].life <= 0) agent.trail.shift();
 
-      if (zone && state.discoveredMicrobes.has(zone.id)) {
+      // A micorriza estabelecida tem a casa espacial no myceliumAnchor/raiz (ver
+      // o bloco `myceliumZone` acima). Este ajuste generico usa zone.y e NAO pode
+      // sobrescrever o homeY da micorriza — puxaria o esporo de volta para longe
+      // do micelio.
+      if (zone && state.discoveredMicrobes.has(zone.id) && agent.type !== 'myco') {
         const homeBounds = organismVerticalBounds(state.level, { topMargin: 90, bottomMargin: 90 });
         agent.homeY = lerp(agent.homeY, clamp(zone.y - 18, homeBounds.minY, homeBounds.maxY), dt * .08);
       }
@@ -701,12 +718,31 @@ export function createMicrobeEcology({ state, entities }) {
   }
 
   function drawLabel(ctx, zone) {
-    const px = state.player.x + state.player.w / 2;
-    const py = state.player.y + state.player.h / 2;
-    if (Math.hypot(zone.x - px, zone.y - py) > 230) return;
     const profile = MICROBE_MOTION_PROFILES[zone.id];
     const catalog = microbeCatalog[zone.id];
     if (!profile || !catalog) return;
+    // Centro visual dos agentes que ainda pertencem a comunidade LOCAL: exclui os
+    // recrutados que sairam com Miguelito (Trichoderma via recruitedUntil, outros
+    // via beneficialRecruitedUntil). Assim o nome identifica a comunidade real e
+    // nao fica sozinho na coordenada vazia da zona quando os agentes migram. E
+    // generico — vale para qualquer comunidade movel, sem if de coordenada.
+    let sumX = 0;
+    let sumY = 0;
+    let local = 0;
+    for (const agent of ecology.agents) {
+      if (agent.zoneIndex !== zone.index) continue;
+      if ((agent.recruitedUntil || 0) > state.time) continue;
+      if ((agent.beneficialRecruitedUntil || 0) > state.time) continue;
+      sumX += agent.x;
+      sumY += agent.y;
+      local++;
+    }
+    if (!local) return; // a comunidade nao esta mais aqui: sem label solto
+    const cx = sumX / local;
+    const cy = sumY / local;
+    const px = state.player.x + state.player.w / 2;
+    const py = state.player.y + state.player.h / 2;
+    if (Math.hypot(cx - px, cy - py) > 230) return;
     const known = state.discoveredMicrobes.has(zone.id);
     const text = known ? catalog.name : 'Comunidade microbiana móvel';
     ctx.save();
@@ -715,10 +751,8 @@ export function createMicrobeEcology({ state, entities }) {
     ctx.shadowBlur = 10;
     ctx.shadowColor = profile.color;
     ctx.fillStyle = known ? '#effff6' : '#d2e4dc';
-    // O nome identifica a comunidade inteira, não um agente isolado. Mantê-lo
-    // no centro do encontro evita confusão com os rótulos inferiores dos
-    // inóculos, que pertencem a outro sistema.
-    ctx.fillText(text, zone.x, zone.y);
+    // O nome identifica a comunidade inteira, sobre o centro visual dela.
+    ctx.fillText(text, cx, cy - 6);
     ctx.restore();
   }
 

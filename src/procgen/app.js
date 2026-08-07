@@ -935,8 +935,17 @@ function prepareLevel() {
     campaign.phase,
     getPhaseManifest(campaign.phase)?.mycorrhizaBridge,
   );
+  // As geometrias autorais das fases 5 e 6 movem x/y/w/h das plataformas, mas nao
+  // movem checkpoints/exsudatos/etc. presos a elas. Captura o vinculo ANTES
+  // (quando ainda esta correto) e re-sincroniza DEPOIS, para as entidades
+  // acompanharem a superficie nova em vez de guardarem coordenadas antigas — que
+  // o anchor registry posterior capturaria como se fossem corretas. Sincroniza
+  // apenas referencias ainda existentes; nao ressuscita entidades removidas.
+  const phaseGeometryAnchors = createRouteAnchorRegistry(levelData);
+  phaseGeometryAnchors.capture();
   applyPhaseFiveTutorialGeometry(levelData, campaign.phase);
   applyPhaseSixTutorialGeometry(levelData, campaign.phase);
+  phaseGeometryAnchors.synchronize();
   levelData = decorateCampaignLevel(levelData, campaign, profile);
   applyPhaseOneVerticalSlice(levelData, campaign.phase);
   traceGeometry('decorateCampaignLevel');
@@ -1692,6 +1701,14 @@ function maybeAnnounceTraversalEncounter() {
 }
 
 function renderWorld() {
+  // Limpeza defensiva em coordenadas de TELA, antes de qualquer zoom/camera:
+  // garante que nenhum quadro residual sobreviva na faixa que o fundo do mundo
+  // nao cobrir. Precisa vir ANTES de cameraView.apply — depois do zoom, um
+  // clearRect(0,0,canvas.width,canvas.height) nao cobriria a tela inteira.
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
   ctx.save();
   try {
     cameraView.apply(ctx);

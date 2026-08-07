@@ -1,4 +1,5 @@
 import { organismVerticalBounds } from './world-bounds.js';
+import { MICROBE_MOTION_PROFILES } from './microbe-ecology.js';
 import { H, W } from '../core/constants.js';
 import { drawInoculatedBacillusSprite, isBacillusSpriteEnabled } from '../render/bacillus-sprite.js';
 import { organismSprites } from '../render/organism-sprites.js';
@@ -507,27 +508,41 @@ export function createBeneficialInoculants({ state, input, ecology, entities }) 
     for (const colony of colonies) updateColony(colony, dt);
   }
 
+  // Linguagem visual unica de "organismo capturado/recrutado": tracejado ligando
+  // o agente a Miguelito e um anel pulsante em volta dele. Reutilizada por todos
+  // os recrutados — beneficos E Trichoderma — para que o feedback seja o mesmo.
+  function drawRecruitmentHalo(ctx, agent, color, playerX, playerY) {
+    const seed = agent.noiseSeed ?? agent.phase ?? 0;
+    ctx.strokeStyle = `${color}66`;
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([3, 7]);
+    ctx.beginPath();
+    ctx.moveTo(agent.x, agent.y);
+    ctx.quadraticCurveTo((agent.x + playerX) / 2, Math.min(agent.y, playerY) - 22, playerX, playerY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = .65;
+    ctx.beginPath();
+    ctx.arc(agent.x, agent.y, 12 + Math.sin(state.time * 3 + seed) * 2, 0, TAU);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
   function drawFollowerTrails(ctx) {
-    const recruited = followers();
-    if (!recruited.length) return;
     const playerX = state.player.x + state.player.w / 2;
     const playerY = state.player.y + state.player.h / 2;
-    for (const agent of recruited) {
-      const profile = PROFILES[agent.type];
-      ctx.strokeStyle = `${profile.color}66`;
-      ctx.lineWidth = 1.2;
-      ctx.setLineDash([3, 7]);
-      ctx.beginPath();
-      ctx.moveTo(agent.x, agent.y);
-      ctx.quadraticCurveTo((agent.x + playerX) / 2, Math.min(agent.y, playerY) - 22, playerX, playerY);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.strokeStyle = profile.color;
-      ctx.globalAlpha = .65;
-      ctx.beginPath();
-      ctx.arc(agent.x, agent.y, 12 + Math.sin(state.time * 3 + agent.noiseSeed) * 2, 0, TAU);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
+    // Organismos beneficos recrutados por este sistema.
+    for (const agent of followers()) {
+      drawRecruitmentHalo(ctx, agent, PROFILES[agent.type].color, playerX, playerY);
+    }
+    // Trichoderma recrutado vive em trichoderma-recruitment.js (recruitedUntil),
+    // fora do sistema benefico, mas o feedback de recrutamento e comum. Enquanto
+    // ataca (hyphalAttack) mantem apenas o proprio ring de ataque, intocado.
+    for (const agent of ecology.agents) {
+      if (agent.type !== 'trichoderma') continue;
+      if ((agent.recruitedUntil || 0) <= state.time || agent.hyphalAttack) continue;
+      drawRecruitmentHalo(ctx, agent, MICROBE_MOTION_PROFILES.trichoderma.color, playerX, playerY);
     }
   }
 

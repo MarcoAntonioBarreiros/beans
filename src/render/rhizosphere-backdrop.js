@@ -119,9 +119,11 @@ export function createRhizosphereBackdrop({
     veil.addColorStop(0.58, 'rgba(3,18,25,.34)');
     veil.addColorStop(1, 'rgba(10,8,18,.56)');
     ctx.fillStyle = veil;
-    // Ancorado na camera, nao em x=0: o veu acompanha o trecho visivel.
-    const cameraX = Number(camera.cameraX) || 0;
-    ctx.fillRect(cameraX, cameraY, width, height);
+    // O veu cobre o viewport inteiro. Este render NAO tem `-cameraX` aplicado ao
+    // contexto (o parallax dos tiles ja calcula seu proprio deslocamento), entao
+    // ancorar o retangulo em cameraX deixava a faixa [0, cameraX] descoberta a
+    // esquerda quando cameraX > 0. Ancorado em x=0.
+    ctx.fillRect(0, cameraY, width, height);
     ctx.restore();
     return true;
   }

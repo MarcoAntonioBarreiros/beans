@@ -71,18 +71,20 @@ export function createRenderer({
     const zoom = Math.max(.01, Number(state.cameraZoom) || 1);
     const viewportWidth = (canvas.width || W) / zoom;
     const viewportHeight = (canvas.height || H) / zoom;
-    const cameraX = state.cameraX || 0;
     const cameraY = state.cameraY || 0;
     const g = ctx.createLinearGradient(0, cameraY, 0, cameraY + viewportHeight);
     g.addColorStop(0, '#0d2f37');
     g.addColorStop(.45, '#10262e');
     g.addColorStop(1, '#170f1b');
     ctx.fillStyle = g;
-    // O fundo fica ancorado ao viewport. Como a transformacao vertical da
-    // camera ja esta aplicada ao contexto, somar cameraY aqui a cancela e evita
-    // revelar a borda superior da imagem em trechos que sobem acima de y=0. O
-    // mesmo vale no eixo X, onde a translacao e feita por cada sistema.
-    ctx.fillRect(cameraX, cameraY, viewportWidth, viewportHeight);
+    // O fundo fica ancorado ao viewport. No eixo Y a transformacao vertical da
+    // camera ja esta aplicada ao contexto, entao somar cameraY aqui a cancela e
+    // evita revelar a borda superior em trechos que sobem acima de y=0. No eixo
+    // X, porem, este render NAO tem `-cameraX` aplicado (a translacao horizontal
+    // e feita dentro de drawWorld, depois): preencher a partir de cameraX deixava
+    // a faixa [0, cameraX] descoberta a esquerda quando cameraX > 0, e os quadros
+    // antigos apareciam ali como fantasma. Ancorado em x=0.
+    ctx.fillRect(0, cameraY, viewportWidth, viewportHeight);
     rhizosphereBackdrop.render(ctx, parallaxCamera, parallaxViewport);
     parallaxBackground.render(ctx, parallaxCamera, parallaxViewport);
   }

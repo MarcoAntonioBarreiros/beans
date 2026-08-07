@@ -11,12 +11,21 @@ function platformAt(level, chunk) {
 function addExudate(level, chunk, lateral = .5) {
   const platform = platformAt(level, chunk);
   if (!platform) return;
-  const duplicate = (level.exudates || []).some(item => item.logicIndex === chunk);
-  if (duplicate) return;
+  const x = platform.x + platform.w * lateral;
+  const y = platform.y - 34;
+  // Se ja existe um exsudato neste chunk, ele pode ter sido criado antes de a
+  // plataforma ser movida pela geometria autoral: reposiciona na superficie
+  // atual em vez de retornar cedo e conservar x/y antigos.
+  const existing = (level.exudates || []).find(item => item.logicIndex === chunk);
+  if (existing) {
+    existing.x = x;
+    existing.y = y;
+    return;
+  }
   level.exudates.push({
     logicIndex: chunk,
-    x: platform.x + platform.w * lateral,
-    y: platform.y - 34,
+    x,
+    y,
     taken: false,
     authored: true,
   });

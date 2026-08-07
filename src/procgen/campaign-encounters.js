@@ -34,8 +34,12 @@ function platformForChunk(platforms, chunkIndex) {
 function zonePosition(platform, random) {
   const lateral = (random() - .5) * Math.min(platform.w * .28, 54);
   return {
+    // A posicao sai da propria plataforma. O antigo `Math.max(95, ...)` era um
+    // teto de screen-space do mundo de uma tela: em rotas que sobem para Y
+    // negativo ele prendia o encontro em y>=95 enquanto a raiz/hifas
+    // acompanhavam a geometria, separando o esporo do micelio.
     x: platform.x + platform.w / 2 + lateral,
-    y: Math.max(95, platform.y - 88 - random() * 42),
+    y: platform.y - 88 - random() * 42,
   };
 }
 

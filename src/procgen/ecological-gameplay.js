@@ -329,10 +329,20 @@ export function createEcologicalGameplay({ state, input, entities, ecology, path
     ctx.globalAlpha = 1;
   }
 
+  // Fonte unica de posicao do biofilme: quando ele pertence a um checkpoint,
+  // deriva de checkpoint.x/y no momento do render, em vez de depender da copia
+  // film.x/film.y que so e sincronizada quando gameplay.update() roda. Assim a
+  // elipse grande do checkpoint nunca fica presa a uma posicao antiga.
+  function biofilmPosition(film) {
+    if (film.checkpoint) return { x: film.checkpoint.x, y: film.checkpoint.y + 8 };
+    return { x: film.x, y: film.y };
+  }
+
   function drawBiofilm(ctx, film) {
-    const pulse = 1 + Math.sin(state.time * 1.8 + film.x * .01) * .04;
+    const { x: fx, y: fy } = biofilmPosition(film);
+    const pulse = 1 + Math.sin(state.time * 1.8 + fx * .01) * .04;
     ctx.save();
-    ctx.translate(film.x, film.y);
+    ctx.translate(fx, fy);
     ctx.scale(pulse, pulse * .62);
     const radius = film.radius * film.growth;
     const matrix = ctx.createRadialGradient(0, 0, 4, 0, 0, radius);

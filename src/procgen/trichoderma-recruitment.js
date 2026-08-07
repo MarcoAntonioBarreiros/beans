@@ -1,4 +1,4 @@
-import { H } from '../core/constants.js';
+import { organismVerticalBounds } from './world-bounds.js';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
@@ -84,6 +84,9 @@ export function createTrichodermaRecruitment({ state, ecology, entities }) {
     const followers = recruitedAgents();
     const playerX = state.player.x + state.player.w / 2;
     const playerY = state.player.y + state.player.h / 2;
+    // Teto/piso da escolta vem da geometria real (como nos outros sistemas), nao
+    // do antigo limite absoluto de tela 64..H-70.
+    const bounds = organismVerticalBounds(state.level);
 
     followers.forEach((agent, index) => {
       agent.followSlot = index;
@@ -95,7 +98,7 @@ export function createTrichodermaRecruitment({ state, ecology, entities }) {
       const row = Math.floor(index / 2);
       const side = index % 2 ? 1 : -1;
       const targetX = playerX - state.player.facing * (74 + row * 26) + side * (24 + row * 6);
-      const targetY = clamp(playerY - 48 - row * 24 + Math.sin(state.time * 2.1 + index) * 12, 64, H - 70);
+      const targetY = clamp(playerY - 48 - row * 24 + Math.sin(state.time * 2.1 + index) * 12, bounds.minY, bounds.maxY);
       const dx = targetX - agent.x;
       const dy = targetY - agent.y;
       const distance = Math.max(1, Math.hypot(dx, dy));
